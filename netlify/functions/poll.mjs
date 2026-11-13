@@ -2,10 +2,11 @@
 // Configured in netlify.toml ([functions."poll"] schedule = "*/2 * * * *").
 import deskCore from "../../lib/desk-core.js";
 import serverless from "../../lib/serverless.js";
+import { getStore } from "@netlify/blobs";
 
 export default async function poll() {
   const desk = deskCore.createDesk({
-    store: serverless.createBlobsStore(),
+    store: serverless.createBlobsStore(undefined, getStore),
     realtime: false,
     timeoutMs: 8000,
     onAlert() {},
@@ -15,5 +16,5 @@ export default async function poll() {
   await desk.load();
   await desk.poll();
   await desk.save();
-  return { statusCode: 200, body: "polled" };
+  return new Response("polled");
 }
