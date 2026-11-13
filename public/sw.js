@@ -3,7 +3,7 @@
 /* Tradera service worker: makes the app installable and keeps a shell
    cache for offline/rough-network loads. API responses are never cached. */
 
-const CACHE = "tradera-shell-v8";
+const CACHE = "tradera-shell-v9";
 const SHELL = [
   "/",
   "/index.html",

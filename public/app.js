@@ -840,11 +840,14 @@ function setupCard(s) {
     (s.note ? '<p class="setup-note">' + esc(s.note) + "</p>" : "") +
     '<div class="setup-actions">' +
       (s.status === "watching"
-        ? '<button class="btn primary small" data-action="trigger-setup" data-id="' + esc(s.id) + '">' + icon("play") + "Trigger</button>" +
-          '<button class="btn ghost small" data-action="edit-setup" data-id="' + esc(s.id) + '">Edit</button>' +
+        ? '<button class="btn small" data-action="edit-setup" data-id="' + esc(s.id) + '">' + icon("edit") + "Edit</button>" +
+          '<button class="btn ghost small" data-action="trigger-setup" data-id="' + esc(s.id) + '" title="Tick this when price has hit your entry">' + icon("play") + "Mark triggered</button>" +
           '<button class="btn ghost small" data-action="set-setup-status" data-id="' + esc(s.id) + '" data-status="invalidated">Invalidate</button>'
-        : '<button class="btn ghost small" data-action="set-setup-status" data-id="' + esc(s.id) + '" data-status="watching">Reactivate</button>' +
-          '<button class="btn ghost small" data-action="edit-setup" data-id="' + esc(s.id) + '">Edit</button>') +
+        : (s.status === "triggered" && !state.trades.some(t => t.setupId === s.id)
+            ? '<button class="btn primary small" data-action="log-setup-trade" data-id="' + esc(s.id) + '">' + icon("plus") + "Log trade</button>"
+            : "") +
+          '<button class="btn ghost small" data-action="edit-setup" data-id="' + esc(s.id) + '">Edit</button>' +
+          '<button class="btn ghost small" data-action="set-setup-status" data-id="' + esc(s.id) + '" data-status="watching">Back to watching</button>') +
       '<span class="spacer"></span>' +
       '<button class="icon-btn" title="Chart" data-action="chart" data-symbol="' + esc(s.symbol) + '">' + icon("chart") + "</button>" +
       '<button class="icon-btn del" title="Delete setup" data-action="delete-setup" data-id="' + esc(s.id) + '">' + icon("trash") + "</button>" +
@@ -904,12 +907,9 @@ function renderPairs() {
   const sections = MARKET_GROUPS.map(g => ({ name: g.name, items: sorted.filter(p => marketGroup(p.symbol) === g) }))
     .concat([{ name: "Other", items: sorted.filter(p => !marketGroup(p.symbol)) }])
     .filter(sec => sec.items.length);
-  const options = MARKET_GROUPS.flatMap(g => g.symbols).map(sym =>
-    '<option value="' + sym + '">' + esc(synthetic(sym) ? synthetic(sym).name : pairKind(sym)) + "</option>").join("");
   return '<div class="panel"><div class="panel-body">' +
     '<form id="pairForm" class="add-pair">' +
-      '<input name="symbol" list="marketCatalog" placeholder="Add a market: EURUSD, XAUUSD, R_75 (V75), STPRNG (Step 100)…" autocomplete="off" required aria-label="Market symbol">' +
-      '<datalist id="marketCatalog">' + options + "</datalist>" +
+      pickerField('<input name="symbol" data-picker="catalog" placeholder="Tap to pick a market, or type EURUSD, V75, Step 100…" autocomplete="off" required aria-label="Market symbol">') +
       '<label class="check-line"><input type="checkbox" name="priority"> Priority</label>' +
       '<button class="btn primary" type="submit">' + icon("plus") + "Add market</button>" +
     "</form>" +
@@ -1442,7 +1442,6 @@ function openTradeForm(trade, presetSetup) {
   const t = trade || {};
   const isEdit = !!trade;
   const isClosed = t.status === "closed";
-  const pairOptions = state.pairs.map(p => '<option value="' + esc(p.symbol) + '"></option>').join("");
   const title = isEdit ? "Edit trade" : presetSetup ? "Trigger setup" : "New trade";
   const subtitle = presetSetup
     ? presetSetup.symbol + " " + String(presetSetup.direction).toUpperCase() + " · entry " +
@@ -1463,8 +1462,7 @@ function openTradeForm(trade, presetSetup) {
       '<input type="hidden" name="setupId" value="' + esc(setupId) + '">' +
       '<input type="hidden" name="setupLabel" value="' + esc(t.setupLabel || (presetSetup && presetSetup.label) || "") + '">' +
       '<div class="form-grid">' +
-        '<label class="field"><span>Pair</span><input name="symbol" list="pairOptions" value="' + esc(symbol) + '" placeholder="EURUSD" required autocomplete="off">' +
-          '<datalist id="pairOptions">' + pairOptions + "</datalist></label>" +
+        '<div class="field"><span class="field-label">Pair</span>' + pickerField('<input name="symbol" data-picker="all" value="' + esc(symbol) + '" placeholder="Tap to pick" required autocomplete="off" aria-label="Pair">') + "</div>" +
         directionField(direction) +
         '<label class="field"><span>Status</span><select name="status" id="tradeStatus">' +
           '<option value="open"' + (!isClosed ? " selected" : "") + ">Open</option>" +
@@ -1607,14 +1605,13 @@ function openCloseForm(trade) {
 function openSetupForm(setup) {
   const s = setup || {};
   const isEdit = !!setup;
-  const pairOptions = state.pairs.map(p => '<option value="' + esc(p.symbol) + '"></option>').join("");
   openModal(
     modalHeader(isEdit ? "Edit setup" : "New setup",
       "Tradera alerts you when price gets within your alert distance of the entry.") +
     '<form id="setupForm">' +
       '<input type="hidden" name="id" value="' + esc(s.id || "") + '">' +
       '<div class="form-grid">' +
-        '<label class="field"><span>Pair</span><input name="symbol" list="setupPairs" value="' + esc(s.symbol || "") + '" placeholder="EURUSD" required autocomplete="off"><datalist id="setupPairs">' + pairOptions + "</datalist></label>" +
+        '<div class="field"><span class="field-label">Pair</span>' + pickerField('<input name="symbol" data-picker="all" value="' + esc(s.symbol || "") + '" placeholder="Tap to pick" required autocomplete="off" aria-label="Pair">') + "</div>" +
         directionField(s.direction) +
         '<label class="field"><span>Entry</span><input name="entry" type="number" step="any" value="' + esc(s.entry !== undefined ? s.entry : "") + '" required></label>' +
         '<label class="field"><span>Stop</span><input name="stop" type="number" step="any" value="' + esc(s.stop !== undefined && s.stop !== null ? s.stop : "") + '"></label>' +
@@ -1742,6 +1739,124 @@ function openChart(symbol) {
   container.appendChild(wrapper);
 }
 
+/* ------------------------------------------------------------ market picker */
+
+function pickerField(inputHtml) {
+  return '<div class="picker">' + inputHtml + '<div class="picker-list" role="listbox" hidden></div></div>';
+}
+
+/** Markets offered by a picker: your own first, then the full catalog by group. */
+function pickerGroups(mode) {
+  const mine = state.pairs.map(p => p.symbol);
+  const groups = [];
+  if (mine.length) groups.push({ name: "Your markets", symbols: mine });
+  MARKET_GROUPS.forEach(g => {
+    const rest = g.symbols.filter(sym => !mine.includes(sym));
+    if (rest.length) groups.push({ name: g.name, symbols: rest });
+  });
+  return groups;
+}
+
+function pickerSubtitle(sym) {
+  const syn = synthetic(sym);
+  if (syn) return syn.name + " · " + sym;
+  const group = marketGroup(sym);
+  return group ? group.name.replace(/s$/, "") : pairKind(sym);
+}
+
+const picker = { input: null, active: -1 };
+
+function renderPicker(input) {
+  const list = input.parentElement.querySelector(".picker-list");
+  if (!list) return;
+  const q = String(input.value || "").trim().toUpperCase().replace(/\s+/g, "");
+  const match = sym => !q || sym.includes(q) || symLabel(sym).toUpperCase().replace(/\s+/g, "").includes(q) ||
+    pickerSubtitle(sym).toUpperCase().replace(/\s+/g, "").includes(q);
+  const groups = pickerGroups(input.dataset.picker)
+    .map(g => ({ name: g.name, symbols: g.symbols.filter(match) }))
+    .filter(g => g.symbols.length);
+  let i = 0;
+  let html = groups.map(g =>
+    '<div class="picker-group">' + esc(g.name) + "</div>" +
+    g.symbols.map(sym => {
+      const q2 = quoteOf(sym);
+      return '<button type="button" class="picker-opt' + (i === picker.active ? " active" : "") + '" role="option" data-pick="' + esc(sym) + '" data-index="' + (i++) + '">' +
+        '<span class="po-main"><b>' + esc(symLabel(sym)) + "</b><small>" + esc(pickerSubtitle(sym)) + "</small></span>" +
+        (q2 && q2.price !== null && q2.price !== undefined ? '<span class="po-price">' + fmtPrice(sym, q2.price) + "</span>" : "") +
+      "</button>";
+    }).join("")).join("");
+  if (!i) html = '<div class="picker-empty">' + (q ? "No market called " + esc(q) + ". You can still use it if your feed carries it." : "No markets yet.") + "</div>";
+  list.innerHTML = html;
+  list.hidden = false;
+  picker.count = i;
+}
+
+function openPicker(input) {
+  if (picker.input && picker.input !== input) closePicker();
+  picker.input = input;
+  picker.active = -1;
+  input.setAttribute("aria-expanded", "true");
+  renderPicker(input);
+}
+
+function closePicker() {
+  if (!picker.input) return;
+  const list = picker.input.parentElement.querySelector(".picker-list");
+  if (list) { list.hidden = true; list.innerHTML = ""; }
+  picker.input.setAttribute("aria-expanded", "false");
+  picker.input = null;
+}
+
+function choosePick(sym) {
+  const input = picker.input;
+  if (!input) return;
+  input.value = sym;
+  closePicker();
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+document.addEventListener("focusin", function (e) {
+  const input = e.target.closest && e.target.closest("input[data-picker]");
+  if (input) openPicker(input);
+  else if (picker.input && !e.target.closest(".picker")) closePicker();
+});
+document.addEventListener("input", function (e) {
+  if (e.target.matches && e.target.matches("input[data-picker]") && picker.input === e.target) {
+    picker.active = -1;
+    renderPicker(e.target);
+  }
+});
+document.addEventListener("keydown", function (e) {
+  if (!picker.input || e.target !== picker.input) return;
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closePicker(); return; }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!picker.count) return;
+    picker.active = (picker.active + (e.key === "ArrowDown" ? 1 : -1) + picker.count) % picker.count;
+    renderPicker(picker.input);
+    const el = picker.input.parentElement.querySelector(".picker-opt.active");
+    if (el) el.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  if (e.key === "Enter" && picker.active >= 0) {
+    const el = picker.input.parentElement.querySelector('.picker-opt[data-index="' + picker.active + '"]');
+    if (el) { e.preventDefault(); choosePick(el.dataset.pick); }
+  }
+  if (e.key === "Tab") closePicker();
+}, true);
+/* Keep focus in the input while tapping the list, so it does not close first. */
+document.addEventListener("pointerdown", function (e) {
+  if (e.target.closest(".picker-list")) e.preventDefault();
+  else if (picker.input && !e.target.closest(".picker")) closePicker();
+});
+document.addEventListener("click", function (e) {
+  const opt = e.target.closest(".picker-opt");
+  if (opt) { e.stopPropagation(); choosePick(opt.dataset.pick); return; }
+  const input = e.target.closest("input[data-picker]");
+  if (input && picker.input !== input) openPicker(input);
+}, true);
+
 /* ----------------------------------------------------------------- actions */
 
 document.addEventListener("click", async function (e) {
@@ -1779,6 +1894,16 @@ document.addEventListener("click", async function (e) {
       return;
     }
     if (action === "trigger-setup") {
+      const setup = state.setups.find(s => s.id === id);
+      if (!setup) return;
+      if (!(await confirmDialog("Mark this setup as triggered?",
+        symLabel(setup.symbol) + " " + String(setup.direction).toUpperCase() + " at " + fmtPrice(setup.symbol, setup.entry) +
+        " will stop being watched and move to Triggered. You can log the trade from there, or put it back on watch.", "Mark triggered"))) return;
+      applyState(await post("/api/setups/" + encodeURIComponent(id) + "/status", { status: "triggered" }));
+      toast("Setup triggered", "Tap Log trade on the card when you are in the position.");
+      return;
+    }
+    if (action === "log-setup-trade") {
       const setup = state.setups.find(s => s.id === id);
       if (setup) openTradeForm(null, setup);
       return;

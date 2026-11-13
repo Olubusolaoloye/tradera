@@ -101,6 +101,22 @@ async function test(name, fn) {
     }
   });
 
+  await test("editing a setup keeps it on watch; editing a linked trade does not re-trigger it", async () => {
+    const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
+    await d.load();
+    let res = await d.handle("POST", "/api/setups", { symbol: "EURUSD", direction: "long", entry: 1.05 });
+    const id = res.body.setups.find(s => s.symbol === "EURUSD" && s.entry === 1.05).id;
+    res = await d.handle("POST", "/api/setups", { id, symbol: "EURUSD", direction: "long", entry: 1.06, status: "watching" });
+    assert.equal(res.body.setups.find(s => s.id === id).status, "watching");
+    assert.equal(res.body.trades.filter(t => t.setupId === id).length, 0);
+    res = await d.handle("POST", "/api/trades", { symbol: "EURUSD", direction: "long", entry: 1.06, setupId: id, status: "open" });
+    assert.equal(res.body.setups.find(s => s.id === id).status, "triggered");
+    const tradeId = res.body.trades.find(t => t.setupId === id).id;
+    await d.handle("POST", "/api/setups/" + id + "/status", { status: "watching" });
+    res = await d.handle("POST", "/api/trades", { id: tradeId, symbol: "EURUSD", direction: "long", entry: 1.061, setupId: id, status: "open" });
+    assert.equal(res.body.setups.find(s => s.id === id).status, "watching");
+  });
+
   await test("bulk add skips duplicates", async () => {
     const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
     await d.load();
