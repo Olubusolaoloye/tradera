@@ -1,0 +1,26 @@
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+
+# Refresh quotes + evaluate entry alerts on a schedule. Netlify supports
+# minute-level cron. Two minutes keeps well inside free-tier usage while still
+# being useful for swing/position entries. Change to "*/5 * * * *" to save quota.
+[functions."poll"]
+  schedule = "*/2 * * * *"
+
+# Send every /api request to one function so routes stay identical to the
+# local Node server.
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
+  force = true
+
+# SPA fallback (there is only one page, but keeps deep links working).
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

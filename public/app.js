@@ -1,0 +1,2171 @@
+"use strict";
+
+/* ------------------------------------------------------------------ setup */
+
+const viewEl = document.getElementById("view");
+const modal = document.getElementById("modal");
+const modalBody = document.getElementById("modalBody");
+const toastsEl = document.getElementById("toasts");
+
+/* Settings stored on this device. Keys moved from "td:" to "tradera:" with the
+   rename; legacy values are still read so nobody gets logged out. */
+function store(key, value) {
+  try {
+    if (value === undefined) return localStorage.getItem("tradera:" + key) || localStorage.getItem("td:" + key) || "";
+    if (value === null) {
+      localStorage.removeItem("tradera:" + key);
+      localStorage.removeItem("td:" + key);
+    } else {
+      localStorage.setItem("tradera:" + key, value);
+    }
+  } catch (_) { /* private mode */ }
+  return "";
+}
+
+const ui = {
+  view: "dashboard",
+  journal: { q: "", status: "all", pair: "all" },
+  browserAlerts: store("browserAlerts") === "1"
+};
+
+let state = null;
+let eventSource = null;
+let clockTimer = null;
+let pollTimer = null;
+let pollBusy = false;
+let sseFailures = 0;
+const seenAlerts = new Set();
+
+const VIEW_META = {
+  dashboard: { title: "Overview", sub: "Where your book stands and what is closest to entry" },
+  journal: { title: "Journal", sub: "Every trade, its result and what you learned" },
+  setups: { title: "Setups", sub: "Trades you are waiting for, closest to entry first" },
+  pairs: { title: "Markets", sub: "The instruments Tradera watches for you" },
+  alerts: { title: "Alerts", sub: "How and where you hear that price is near your entry" },
+  settings: { title: "Settings", sub: "Account, price feed, notifications and backups" }
+};
+
+const ICONS = {
+  chart: '<path d="M4 19V5m0 14h16M8 15l3-4 3 2 4-6"/>',
+  edit: '<path d="M4 20h4l10-10-4-4L4 16v4Zm9-13 4 4"/>',
+  play: '<path d="M8 5v14l11-7-11-7Z"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13"/>',
+  star: '<path d="m12 3 2.7 5.7 6.3.9-4.6 4.4 1.1 6.2L12 17.3 6.5 20.2l1.1-6.2L3 9.6l6.3-.9L12 3Z"/>',
+  eye: '<path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.6"/>',
+  close: '<path d="M6 6l12 12M18 6 6 18"/>',
+  external: '<path d="M14 4h6v6M20 4l-9 9M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  check: '<path d="m5 13 4 4L19 7"/>',
+  bell: '<path d="M18 9a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7M10.5 20a2 2 0 0 0 3 0"/>'
+};
+
+function icon(name) {
+  return '<svg viewBox="0 0 24 24" aria-hidden="true">' + (ICONS[name] || "") + "</svg>";
+}
+
+/* ---------------------------------------------------------------- helpers */
+
+function esc(value) {
+  return String(value === null || value === undefined ? "" : value).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
+function n(value) {
+  if (value === "" || value === null || value === undefined) return null;
+  const x = Number(value);
+  return Number.isFinite(x) ? x : null;
+}
+function fmtMoney(value, digits) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+  const places = digits === undefined ? 2 : digits;
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: (state && state.settings.accountCurrency) || "USD",
+      minimumFractionDigits: places,
+      maximumFractionDigits: places
+    }).format(Number(value));
+  } catch (_) {
+    return Number(value).toFixed(places);
+  }
+}
+function fmtSignedMoney(value) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+  return (Number(value) > 0 ? "+" : "") + fmtMoney(value);
+}
+function fmtNum(value, digits) {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return "—";
+  return Number(value).toLocaleString(undefined, {
+    minimumFractionDigits: digits === undefined ? 2 : digits,
+    maximumFractionDigits: digits === undefined ? 2 : digits
+  });
+}
+/* Market catalog, grouped the way traders think about it. Synthetic entries
+   mirror SYNTHETICS in lib/desk-core.js (label, decimals, step size). */
+const SYNTHETICS = {
+  R_10: { label: "V10", name: "Volatility 10 Index", dec: 3 },
+  R_25: { label: "V25", name: "Volatility 25 Index", dec: 3 },
+  R_50: { label: "V50", name: "Volatility 50 Index", dec: 4 },
+  R_75: { label: "V75", name: "Volatility 75 Index", dec: 4 },
+  R_100: { label: "V100", name: "Volatility 100 Index", dec: 2 },
+  "1HZ10V": { label: "V10 (1s)", name: "Volatility 10 (1s) Index", dec: 2 },
+  "1HZ15V": { label: "V15 (1s)", name: "Volatility 15 (1s) Index", dec: 3 },
+  "1HZ25V": { label: "V25 (1s)", name: "Volatility 25 (1s) Index", dec: 2 },
+  "1HZ30V": { label: "V30 (1s)", name: "Volatility 30 (1s) Index", dec: 3 },
+  "1HZ50V": { label: "V50 (1s)", name: "Volatility 50 (1s) Index", dec: 2 },
+  "1HZ75V": { label: "V75 (1s)", name: "Volatility 75 (1s) Index", dec: 2 },
+  "1HZ90V": { label: "V90 (1s)", name: "Volatility 90 (1s) Index", dec: 3 },
+  "1HZ100V": { label: "V100 (1s)", name: "Volatility 100 (1s) Index", dec: 2 },
+  STPRNG: { label: "Step 100", name: "Step Index 100", dec: 1, step: true },
+  STPRNG2: { label: "Step 200", name: "Step Index 200", dec: 1, step: true },
+  STPRNG3: { label: "Step 300", name: "Step Index 300", dec: 1, step: true },
+  STPRNG4: { label: "Step 400", name: "Step Index 400", dec: 1, step: true },
+  STPRNG5: { label: "Step 500", name: "Step Index 500", dec: 1, step: true }
+};
+
+const MARKET_GROUPS = [
+  { id: "majors", name: "Forex majors", symbols: ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD", "NZDUSD"] },
+  { id: "minors", name: "Forex minors", symbols: ["EURGBP", "EURJPY", "EURCHF", "EURAUD", "EURCAD", "EURNZD", "GBPJPY", "GBPCHF", "GBPAUD", "GBPCAD", "GBPNZD", "AUDJPY", "AUDCHF", "AUDCAD", "AUDNZD", "CADJPY", "CADCHF", "CHFJPY", "NZDJPY", "NZDCHF", "NZDCAD"] },
+  { id: "metals", name: "Metals", symbols: ["XAUUSD", "XAGUSD"] },
+  { id: "indices", name: "Stock indices", symbols: ["US30", "NAS100", "SPX500", "GER40", "UK100", "JP225"] },
+  { id: "crypto", name: "Crypto", symbols: ["BTCUSD", "ETHUSD"] },
+  { id: "volatility", name: "Volatility indices", symbols: ["R_10", "R_25", "R_50", "R_75", "R_100", "1HZ10V", "1HZ15V", "1HZ25V", "1HZ30V", "1HZ50V", "1HZ75V", "1HZ90V", "1HZ100V"] },
+  { id: "step", name: "Step indices", symbols: ["STPRNG", "STPRNG2", "STPRNG3", "STPRNG4", "STPRNG5"] }
+];
+
+function synthetic(symbol) {
+  return SYNTHETICS[String(symbol || "").toUpperCase()] || null;
+}
+/** What traders call the market: V75 (1s), Step 200, EURUSD… */
+function symLabel(symbol) {
+  const syn = synthetic(symbol);
+  return syn ? syn.label : String(symbol || "");
+}
+function marketGroup(symbol) {
+  const s = String(symbol || "").toUpperCase();
+  return MARKET_GROUPS.find(g => g.symbols.includes(s)) || null;
+}
+
+function pipSize(symbol) {
+  const s = String(symbol || "").toUpperCase();
+  const syn = SYNTHETICS[s];
+  if (syn) return syn.step ? 0.1 : 1;
+  if (/XAU|GOLD/.test(s)) return 0.1;
+  if (/XAG|SILVER/.test(s)) return 0.01;
+  if (/JPY/.test(s)) return 0.01;
+  if (/BTC|ETH|SOL|USDT|USDC|DOGE/.test(s)) return 1;
+  if (/US30|NAS100|SPX500|GER40|UK100|JP225|US2000/.test(s)) return 1;
+  return 0.0001;
+}
+function priceDecimals(symbol) {
+  const syn = synthetic(symbol);
+  if (syn) return syn.dec;
+  const pip = pipSize(symbol);
+  if (pip >= 1) return 2;
+  if (pip >= 0.1) return 2;
+  if (pip >= 0.01) return 3;
+  return 5;
+}
+function unitName(symbol) {
+  return synthetic(symbol) || pipSize(symbol) >= 1 ? "pts" : "pips";
+}
+function pairKind(symbol) {
+  const s = String(symbol || "").toUpperCase();
+  if (SYNTHETICS[s]) return SYNTHETICS[s].name;
+  if (s.startsWith("Y:")) return s.slice(2);
+  if (/XAU|GOLD/.test(s)) return "Gold spot";
+  if (/XAG|SILVER/.test(s)) return "Silver spot";
+  if (/^(BTC|ETH|SOL|DOGE|XRP|ADA|BNB)/.test(s)) return "Crypto";
+  if (/US30|NAS100|SPX500|GER40|UK100|JP225|US2000/.test(s)) return "Index";
+  if (/OIL|WTI|BRENT/.test(s)) return "Energy";
+  if (/^[A-Z]{6}$/.test(s)) return /JPY$/.test(s) ? "FX · JPY pair" : "FX pair";
+  return "Instrument";
+}
+function fmtPrice(symbol, price) {
+  if (price === null || price === undefined || !Number.isFinite(Number(price))) return "—";
+  return Number(price).toFixed(priceDecimals(symbol));
+}
+function fmtDate(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "2-digit" });
+}
+function fmtDateTime(value) {
+  if (!value) return "—";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+function timeAgo(ts) {
+  if (!ts) return "—";
+  const diff = Date.now() - Number(ts);
+  if (diff < 45000) return "just now";
+  const mins = Math.round(diff / 60000);
+  if (mins < 60) return mins + "m ago";
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return hours + "h ago";
+  return Math.round(hours / 24) + "d ago";
+}
+function monthLabel(key) {
+  const [y, m] = String(key).split("-");
+  const d = new Date(Number(y), Number(m) - 1, 1);
+  return d.toLocaleDateString(undefined, { month: "short" });
+}
+function toLocalInput(value) {
+  const d = value ? new Date(value) : new Date();
+  if (Number.isNaN(d.getTime())) return "";
+  const local = new Date(d.getTime() - d.getTimezoneOffset() * 60000);
+  return local.toISOString().slice(0, 16);
+}
+function dirTag(direction) {
+  const short = String(direction) === "short";
+  return '<span class="side-tag ' + (short ? "short" : "long") + '"><span class="arr">' +
+    (short ? "▼" : "▲") + "</span>" + (short ? "SHORT" : "LONG") + "</span>";
+}
+function pnlClass(value) {
+  if (value === null || value === undefined) return "";
+  return Number(value) > 0 ? "pos" : Number(value) < 0 ? "neg" : "";
+}
+function statusPill(setup) {
+  if (setup.status === "triggered") return '<span class="pill triggered">Triggered</span>';
+  if (setup.status === "invalidated") return '<span class="pill invalidated">Invalidated</span>';
+  if (setup.status === "done") return '<span class="pill done">Done</span>';
+  if (setup.crossed) return '<span class="pill entry">At entry</span>';
+  if (setup.near) return '<span class="pill near">Near</span>';
+  return '<span class="pill watching">Watching</span>';
+}
+function rrText(rr) {
+  return rr === null || rr === undefined ? "—" : "1 : " + fmtNum(rr, 2);
+}
+function quoteOf(symbol) {
+  return (state && state.quotes && state.quotes[symbol]) || null;
+}
+function isStale(q) {
+  if (!q) return true;
+  if (q.stale) return true;
+  return q.updatedAt && Date.now() - q.updatedAt > 120000;
+}
+function setupDistanceText(setup) {
+  if (setup.distancePips === null || setup.distancePips === undefined) return "waiting for price";
+  if (setup.crossed) return "at entry";
+  return fmtNum(setup.distancePips, 1) + " " + unitName(setup.symbol) + " away";
+}
+function meterWidth(setup) {
+  if (setup.distancePips === null || setup.distancePips === undefined) return 0;
+  const threshold = setup.threshold || 1;
+  return Math.max(4, Math.min(100, (1 - Math.min(setup.distancePips / threshold, 1)) * 100));
+}
+
+/* -------------------------------------------------------------------- data */
+
+function deskKey() {
+  return store("key");
+}
+function authHeaders() {
+  const key = deskKey();
+  return key ? { "x-desk-key": key } : {};
+}
+/** mode "password": the app password from Settings. "passcode": Netlify's DESK_PASSCODE. */
+function showGate(mode) {
+  const gate = document.getElementById("gate");
+  if (!gate) return;
+  ui.authMode = mode === "passcode" ? "passcode" : "password";
+  const passcode = ui.authMode === "passcode";
+  document.getElementById("gateText").textContent = passcode
+    ? "Your journal is private. Enter your site passcode to open it on this device."
+    : "Your journal is private. Enter your password to open it on this device.";
+  document.getElementById("gateLabel").textContent = passcode ? "Passcode" : "Password";
+  document.getElementById("gateNote").innerHTML = passcode
+    ? "The passcode is the <b>DESK_PASSCODE</b> setting on your Netlify site. Set your own password later in Settings."
+    : "You'll stay logged in on this device for 30 days.";
+  gate.hidden = false;
+  const input = document.getElementById("gateKey");
+  if (input) {
+    input.value = "";
+    input.placeholder = passcode ? "Your passcode" : "Your password";
+    setTimeout(function () { input.focus(); }, 50);
+  }
+}
+
+function signOutLocally() {
+  store("key", null);
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  state = null;
+}
+function hideGate() {
+  const gate = document.getElementById("gate");
+  if (gate) gate.hidden = true;
+}
+
+async function api(path, options) {
+  const opts = options || {};
+  const headers = { "Content-Type": "application/json", ...authHeaders(), ...(opts.headers || {}) };
+  const res = await fetch(path, { ...opts, headers, cache: "no-store" });
+  let data = {};
+  try { data = await res.json(); } catch (_) { /* empty */ }
+  if (res.status === 401) {
+    signOutLocally();
+    showGate(data.auth);
+    throw new Error(data.error || "Please log in");
+  }
+  if (!res.ok) throw new Error(data.error || "Request failed (" + res.status + ")");
+  return data;
+}
+function post(path, body) {
+  return api(path, { method: "POST", body: JSON.stringify(body || {}) });
+}
+function patch(path, body) {
+  return api(path, { method: "PATCH", body: JSON.stringify(body || {}) });
+}
+
+function seedAlerts(list) {
+  (list || []).forEach(function (a) { if (a && a.id) seenAlerts.add(a.id); });
+}
+
+function applyState(next, options) {
+  const previous = new Set(((state && state.alerts) || []).map(function (a) { return a.id; }));
+  const fresh = ((next && next.alerts) || []).filter(function (a) {
+    return a && a.id && !previous.has(a.id) && !seenAlerts.has(a.id);
+  });
+  state = next;
+  seedAlerts(state.alerts);
+  updateNotifyButton();
+  renderChrome();
+  renderView();
+  if (!options || !options.silent) updateLiveNodes();
+  fresh.slice().reverse().forEach(showAlert);
+}
+
+/** Merge a polled state without disturbing an open form or focused input. */
+function absorbState(next) {
+  const fresh = (next.alerts || []).filter(function (a) { return a && a.id && !seenAlerts.has(a.id); });
+  state = next;
+  seedAlerts(next.alerts);
+  updateNotifyButton();
+  const tag = document.activeElement && document.activeElement.tagName;
+  const typing = (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") &&
+    document.activeElement.closest("#view");
+  if (modal.open || typing) {
+    updateLiveNodes();
+    renderChrome();
+  } else {
+    renderChrome();
+    renderView();
+  }
+  fresh.slice().reverse().forEach(showAlert);
+}
+
+async function pollState() {
+  if (!state || pollBusy) return;
+  pollBusy = true;
+  try {
+    const next = await api("/api/state");
+    absorbState(next);
+  } catch (err) {
+    if (!/passcode/i.test(err.message)) setFeedError("Offline — retrying");
+  } finally {
+    pollBusy = false;
+  }
+}
+
+function startPolling() {
+  if (pollTimer || !state || state.realtime !== false) return;
+  const seconds = Math.max(15, Number(state.effectivePollSeconds) || 60);
+  pollTimer = setInterval(pollState, seconds * 1000);
+}
+
+function setFeedError(message) {
+  const pill = document.getElementById("feedPill");
+  const text = document.getElementById("feedText");
+  const mobile = document.getElementById("mobileFeed");
+  const mobileText = document.getElementById("mobileFeedText");
+  if (pill && text) {
+    pill.className = "feed-pill err";
+    text.textContent = message || "Feed error";
+  }
+  if (mobile && mobileText) {
+    mobile.className = "mb-feed err";
+    mobileText.textContent = message || "Feed error";
+    mobile.title = message || "Price feed unavailable";
+  }
+}
+
+function updateFeedPill() {
+  const pill = document.getElementById("feedPill");
+  const text = document.getElementById("feedText");
+  if (!state) return;
+  const f = state.feedStatus || {};
+  const seconds = state.effectivePollSeconds || state.settings.pollSeconds;
+  const demo = state.settings.feed === "demo";
+  const mobile = document.getElementById("mobileFeed");
+  const mobileText = document.getElementById("mobileFeedText");
+
+  if (!f.ok) {
+    if (pill && text) {
+      pill.className = "feed-pill err";
+      text.textContent = "Feed error";
+      pill.title = f.error || "Price feed unavailable";
+    }
+    if (mobile && mobileText) {
+      mobile.className = "mb-feed err";
+      mobileText.textContent = "Feed error";
+      mobile.title = f.error || "Price feed unavailable";
+    }
+    return;
+  }
+
+  const source = demo ? "Demo feed" : f.source === "twelvedata" ? "Twelve Data" : f.source === "oanda" ? "OANDA live" : f.source === "deriv" ? "Deriv live" : "Yahoo feed";
+  if (pill && text) {
+    pill.className = "feed-pill " + (demo ? "demo" : "ok");
+    text.textContent = source + " · " + seconds + "s";
+    pill.title = f.error || ("Last update " + (f.at ? new Date(f.at).toLocaleTimeString() : "—"));
+  }
+  if (mobile && mobileText) {
+    mobile.className = "mb-feed " + (demo ? "demo" : "ok");
+    mobileText.textContent = demo ? "Demo" : "Live";
+    mobile.title = source + " · updated " + (f.at ? new Date(f.at).toLocaleTimeString() : "—");
+  }
+}
+
+/* ------------------------------------------------------------------ render */
+
+function renderChrome() {
+  document.querySelectorAll("#nav [data-view], .tabbar [data-view]").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.view === ui.view);
+  });
+  const meta = VIEW_META[ui.view] || VIEW_META.dashboard;
+  document.getElementById("viewTitle").textContent = meta.title;
+  document.getElementById("viewSub").textContent = meta.sub;
+  const mbTitle = document.getElementById("mbTitle");
+  if (mbTitle) mbTitle.textContent = meta.title;
+
+  const actions = document.getElementById("topActions");
+  if (ui.view === "dashboard") {
+    actions.innerHTML =
+      '<button class="btn ghost" data-action="new-setup">' + icon("plus") + "New setup</button>" +
+      '<button class="btn primary" data-action="new-trade">' + icon("plus") + "New trade</button>";
+  } else if (ui.view === "journal") {
+    actions.innerHTML = '<button class="btn primary" data-action="new-trade">' + icon("plus") + "New trade</button>";
+  } else if (ui.view === "setups") {
+    actions.innerHTML = '<button class="btn primary" data-action="new-setup">' + icon("plus") + "New setup</button>";
+  } else if (ui.view === "alerts") {
+    actions.innerHTML = '<button class="btn" data-action="test-alert">' + icon("bell") + "Send test alert</button>";
+  } else {
+    actions.innerHTML = "";
+  }
+
+  const navDot = document.getElementById("navAlertDot");
+  if (navDot) navDot.hidden = !(state && state.priority && state.priority.some(s => s.near));
+  const mobileDot = document.getElementById("mobileAlertDot");
+  if (mobileDot) mobileDot.hidden = !(state && state.priority && state.priority.some(s => s.near));
+
+  updateFeedPill();
+  updateNotifyButton();
+}
+
+function renderView() {
+  if (!state) return;
+  if (ui.view === "dashboard") viewEl.innerHTML = renderDashboard();
+  else if (ui.view === "journal") viewEl.innerHTML = renderJournal();
+  else if (ui.view === "setups") viewEl.innerHTML = renderSetups();
+  else if (ui.view === "pairs") viewEl.innerHTML = renderPairs();
+  else if (ui.view === "alerts") viewEl.innerHTML = renderAlerts();
+  else viewEl.innerHTML = renderSettings();
+  attachViewListeners();
+  updateLiveNodes();
+}
+
+function emptyState(mark, title, text, cta) {
+  return '<div class="empty"><div class="empty-mark">' + mark + "</div><strong>" + esc(title) +
+    "</strong><p>" + esc(text) + "</p>" + (cta || "") + "</div>";
+}
+
+/* --------------------------------------------------------------- dashboard */
+
+function greeting() {
+  const h = new Date().getHours();
+  return h < 5 ? "Burning the midnight oil" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+}
+
+function plural(count, word) {
+  return count + " " + word + (count === 1 ? "" : "s");
+}
+
+/** One plain sentence about the thing that matters most right now. */
+function heroLine(priority) {
+  const priced = priority.filter(s => s.distancePips !== null && s.distancePips !== undefined);
+  const closest = priced.slice().sort((a, b) => a.distancePips - b.distancePips)[0];
+  const sym = s => '<span class="sym">' + esc(s.symbol) + "</span>";
+  const away = s => fmtNum(s.distancePips, 1) + " " + unitName(s.symbol);
+  const atEntry = priority.filter(s => s.crossed);
+  const near = priority.filter(s => s.near && !s.crossed);
+
+  if (atEntry.length) {
+    return {
+      line: sym(atEntry[0]) + " is at your entry.",
+      sub: "Check your plan, then trigger the setup to log the trade." +
+        (atEntry.length > 1 ? " " + plural(atEntry.length - 1, "other setup") + " also reached entry." : "")
+    };
+  }
+  if (near.length) {
+    const first = near.slice().sort((a, b) => a.distancePips - b.distancePips)[0];
+    return {
+      line: sym(first) + " is " + away(first) + " from entry.",
+      sub: plural(near.length, "setup") + " inside alert range. Get your chart up."
+    };
+  }
+  if (closest) {
+    return {
+      line: "Watching " + plural(priority.length, "setup") + ". Nothing close yet.",
+      sub: "Closest is " + esc(closest.symbol) + ", " + away(closest) + " away. We will tell you when that changes."
+    };
+  }
+  if (priority.length) {
+    return { line: "Watching " + plural(priority.length, "setup") + ".", sub: "Waiting for the first prices to arrive." };
+  }
+  if (!state.pairs.length) {
+    return { line: "Let's set up your desk.", sub: "Add the markets you trade, plan a setup, and Tradera will watch price for you." };
+  }
+  return { line: "No setups on watch.", sub: "Plan your next trade and Tradera will tell you when price gets close." };
+}
+
+function onboardingSteps() {
+  const s = state.settings;
+  const pushOn = !!(s.ntfyTopic || (s.telegramToken && s.telegramChatId) ||
+    (ui.browserAlerts && "Notification" in window && Notification.permission === "granted"));
+  return [
+    { done: state.pairs.length > 0, title: "Add your markets", text: "EURUSD, XAUUSD, BTCUSD…", view: "pairs" },
+    { done: state.setups.length > 0, title: "Plan a setup", text: "Entry, stop, target and how close is close.", action: "new-setup" },
+    { done: pushOn, title: "Get alerts on your phone", text: "Free with ntfy, or use Telegram.", view: "alerts" },
+    { done: state.trades.length > 0, title: "Log a trade", text: "Your stats and equity curve start here.", action: "new-trade" }
+  ];
+}
+
+function checklistPanel() {
+  const steps = onboardingSteps();
+  const left = steps.filter(x => !x.done).length;
+  if (!left || store("hideChecklist") === "1") return "";
+  return '<section class="panel section-gap">' +
+    '<div class="panel-head"><h2>Get set up</h2><span class="hint">' + (4 - left) + " of 4 done " +
+      '<button class="btn ghost small" data-action="hide-checklist" style="margin-left:8px">Hide</button></span></div>' +
+    '<div class="checklist">' + steps.map(function (step, i) {
+      const attr = step.done ? "disabled" : step.view ? 'data-view="' + step.view + '"' : 'data-action="' + step.action + '"';
+      return '<button type="button" class="check-step ' + (step.done ? "done" : "") + '" ' + attr + ">" +
+        '<span class="n">' + (step.done ? "✓" : i + 1) + "</span><b>" + esc(step.title) + "</b><span>" + esc(step.text) + "</span></button>";
+    }).join("") + "</div></section>";
+}
+
+function ledgerItem(label, value, sub) {
+  return '<div class="ledger-item"><div class="ledger-label">' + esc(label) + '</div><div class="ledger-value">' + value +
+    '</div><div class="ledger-sub">' + sub + "</div></div>";
+}
+
+function renderDashboard() {
+  const s = state.stats;
+  const priority = state.priority;
+  const openTrades = state.trades.filter(t => t.status !== "closed");
+  const recentAlerts = state.alerts.slice(0, 4);
+  const feedError = state.feedStatus && !state.feedStatus.ok
+    ? '<div class="feed-error">' + esc(state.feedStatus.error || "Price feed unavailable") +
+      ". Entry alerts are paused until prices come back.</div>"
+    : "";
+  const hero = heroLine(priority);
+  const feedWarn = state.feedStatus && state.feedStatus.ok && state.feedStatus.warning
+    ? '<div class="feed-error" style="background:var(--near-soft);color:var(--near)">Using backup prices for some markets: ' + esc(state.feedStatus.warning) + "</div>"
+    : "";
+  const balance = (Number(s.startingBalance) || 0) + (Number(s.netPnl) || 0);
+
+  return feedError + feedWarn +
+    '<section class="hero">' +
+      "<div>" +
+        '<p class="hero-greet">' + greeting() + ".</p>" +
+        '<h2 class="hero-line">' + hero.line + "</h2>" +
+        '<p class="hero-sub">' + hero.sub + "</p>" +
+      "</div>" +
+      '<div class="hero-balance"><span>Balance</span><b>' + fmtMoney(balance) + "</b>" +
+        '<em class="' + pnlClass(s.netPnl) + '">' + fmtSignedMoney(s.netPnl) +
+        (s.netPnlPct === null ? "" : " (" + (s.netPnlPct > 0 ? "+" : "") + s.netPnlPct + "%)") + "</em></div>" +
+      '<div class="ledger">' +
+        ledgerItem("Win rate", s.winRate === null ? "—" : s.winRate + "%",
+          s.wins + " won, " + s.losses + " lost" + (s.breakeven ? ", " + s.breakeven + " flat" : "")) +
+        ledgerItem("Profit factor", !s.trades ? "—" : s.profitFactor === null ? "∞" : fmtNum(s.profitFactor, 2),
+          "Gross wins vs losses") +
+        ledgerItem("Average R", s.avgR === null ? "—" : '<span class="' + pnlClass(s.avgR) + '">' + (s.avgR > 0 ? "+" : "") + fmtNum(s.avgR, 2) + "R</span>",
+          "Per closed trade") +
+        ledgerItem("Expectancy", s.expectancy === null || s.expectancy === undefined ? "—" : '<span class="' + pnlClass(s.expectancy) + '">' + fmtSignedMoney(s.expectancy) + "</span>",
+          s.currentStreak > 1 ? s.currentStreak + " wins in a row" : s.currentStreak < -1 ? -s.currentStreak + " losses in a row" : "Average per trade") +
+        ledgerItem("Max drawdown", fmtMoney(s.maxDrawdown), (s.maxDrawdownPct || 0) + "% from peak") +
+        ledgerItem("Open risk", fmtMoney(s.openRisk), plural(openTrades.length, "open trade")) +
+      "</div>" +
+    "</section>" +
+
+    checklistPanel() +
+
+    '<div class="dash-grid">' +
+      '<section class="panel">' +
+        '<div class="panel-head"><h2>Closest to entry</h2><span class="hint">' +
+          plural(priority.length, "setup") + " on watch</span></div>" +
+        priorityTable(priority) +
+      "</section>" +
+      '<div class="stack">' +
+        '<section class="panel">' +
+          '<div class="panel-head"><h2>Open trades</h2><span class="hint">' + (openTrades.length ? fmtMoney(s.openRisk) + " at risk" : "") + "</span></div>" +
+          openPositionsList(openTrades) +
+        "</section>" +
+        '<section class="panel">' +
+          '<div class="panel-head"><h2>Recent alerts</h2><button class="btn ghost small" data-view="alerts">View all</button></div>' +
+          recentAlertsList(recentAlerts) +
+        "</section>" +
+      "</div>" +
+    "</div>" +
+
+    '<section class="panel section-gap">' +
+      '<div class="panel-head"><h2>Equity curve</h2><span class="hint">From ' + fmtMoney(s.startingBalance) +
+        " across " + plural(s.trades, "closed trade") + "</span></div>" +
+      '<div class="panel-body"><div class="curve-wrap">' + equitySvg(s.curve) + "</div></div>" +
+      monthlyBars(s.monthly) +
+    "</section>";
+}
+
+function priorityTable(list) {
+  if (!list.length) {
+    return emptyState("◎", "Nothing on watch yet",
+      "Plan a trade with an entry level. It shows up here with a live bar that fills as price closes in.",
+      '<button class="btn primary small" data-action="new-setup">Plan a setup</button>');
+  }
+  // Each row is a runway: the bar fills as price closes in on the brass entry tick.
+  const rows = list.map(function (s) {
+    const quote = quoteOf(s.symbol);
+    const stale = !quote || isStale(quote);
+    return '<div class="runway row-link ' + (s.crossed ? "hit" : s.near ? "near" : "") + '" data-action="edit-setup" data-id="' + esc(s.id) + '" data-runway="' + esc(s.id) + '">' +
+      '<div class="runway-id"><div class="top"><b>' + esc(symLabel(s.symbol)) + "</b>" + dirTag(s.direction) +
+        (s.pairPriority ? '<span class="chip brass">★</span>' : "") + "</div>" +
+        '<div class="lbl">' + esc(s.label || (s.priority ? s.priority[0].toUpperCase() + s.priority.slice(1) + " priority" : "")) +
+        (s.rr ? " · R:R " + rrText(s.rr) : "") + "</div></div>" +
+      '<div class="runway-track"><div class="levels-line"><span>Now <b data-price="' + esc(s.symbol) + '">' +
+        fmtPrice(s.symbol, quote ? quote.price : null) + "</b>" +
+        (stale ? '<span class="stale-mark" title="Price is delayed or missing"></span>' : "") + "</span>" +
+        "<span>Entry <b>" + fmtPrice(s.symbol, s.entry) + "</b></span></div>" +
+        '<i class="dist-bar"><b data-meter="' + esc(s.id) + '" style="width:' + meterWidth(s) + '%"></b></i></div>' +
+      '<div class="runway-dist"><b data-dist="' + esc(s.id) + '">' + setupDistanceText(s) + "</b><span>alert at " +
+        fmtNum(s.threshold, 0) + " " + unitName(s.symbol) + "</span></div>" +
+      '<div class="row-actions">' +
+        '<button class="icon-btn" title="Open chart" data-action="chart" data-symbol="' + esc(s.symbol) + '">' + icon("chart") + "</button>" +
+        '<button class="icon-btn go" title="Trigger: log this trade" data-action="trigger-setup" data-id="' + esc(s.id) + '">' + icon("play") + "</button>" +
+      "</div></div>";
+  }).join("");
+  return '<div class="runway-list">' + rows + "</div>";
+}
+
+function openPositionsList(trades) {
+  if (!trades.length) {
+    return emptyState("○", "You're flat", "No open trades. When you take one, log it here to track risk and R:R.",
+      '<button class="btn ghost small" data-action="new-trade">Log a trade</button>');
+  }
+  return '<div class="mini-list">' + trades.slice(0, 5).map(function (t) {
+    return '<div class="mini-row row-link" data-action="edit-trade" data-id="' + esc(t.id) + '">' +
+      '<div class="mini-main"><b>' + esc(symLabel(t.symbol)) + " " + dirTag(t.direction) + "</b>" +
+      '<div class="mini-sub">Entry ' + fmtPrice(t.symbol, t.entry) + " · " + fmtDate(t.openedAt) +
+      (t.riskAmount ? " · risk " + fmtMoney(t.riskAmount) : "") + "</div></div>" +
+      '<div class="mini-right"><b>' + rrText(t.rr) + "</b><span>R:R</span></div></div>";
+  }).join("") + "</div>";
+}
+
+function recentAlertsList(alerts) {
+  if (!alerts.length) {
+    return emptyState("◔", "All quiet",
+      "When price gets close to one of your entries, you'll see it here and on your phone if alerts are on.",
+      "");
+  }
+  return '<div class="mini-list">' + alerts.map(function (a) {
+    return '<div class="mini-row"><div class="mini-main"><b>' + esc(a.symbol) + " · " +
+      esc(a.kind === "entry" ? "At entry" : a.kind === "test" ? "Test alert" : "Getting close") + "</b>" +
+      '<div class="mini-sub">' + esc(a.message) + "</div></div>" +
+      '<div class="mini-right"><b>' + fmtPrice(a.symbol, a.price) + '</b><span>' + timeAgo(a.at) + "</span></div></div>";
+  }).join("") + "</div>";
+}
+
+function equitySvg(curve) {
+  const width = 1000, height = 210, padX = 16, padTop = 18, padBottom = 26;
+  const start = Number(state.settings.startingBalance) || 0;
+  let pts = Array.isArray(curve) && curve.length ? curve.slice() : [{ t: Date.now(), value: start }];
+  if (pts.length === 1) pts.push({ t: pts[0].t + 1, value: pts[0].value });
+  const values = pts.map(p => Number(p.value));
+  let min = Math.min.apply(null, values.concat([start]));
+  let max = Math.max.apply(null, values.concat([start]));
+  if (max - min < 1e-9) { max += 1; min -= 1; }
+  const range = max - min;
+  const x = i => padX + (i / (pts.length - 1)) * (width - padX * 2);
+  const y = v => padTop + (1 - (v - min) / range) * (height - padTop - padBottom);
+  const line = pts.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + "," + y(p.value).toFixed(1)).join(" ");
+  const area = line + " L" + x(pts.length - 1).toFixed(1) + "," + (height - padBottom) +
+    " L" + padX + "," + (height - padBottom) + " Z";
+  const last = pts[pts.length - 1].value;
+  const color = last >= start ? "var(--up)" : "var(--down)";
+  const baseY = y(start);
+  return '<svg viewBox="0 0 ' + width + " " + height + '" preserveAspectRatio="none" role="img" aria-label="Equity curve">' +
+    '<defs><linearGradient id="eqfill" x1="0" x2="0" y1="0" y2="1">' +
+    '<stop offset="0" style="stop-color:' + color + ';stop-opacity:.22"></stop>' +
+    '<stop offset="1" style="stop-color:' + color + ';stop-opacity:0"></stop></linearGradient></defs>' +
+    '<line x1="' + padX + '" x2="' + (width - padX) + '" y1="' + baseY + '" y2="' + baseY +
+      '" style="stroke:var(--line-strong)" stroke-dasharray="4 6" vector-effect="non-scaling-stroke"></line>' +
+    '<path d="' + area + '" fill="url(#eqfill)"></path>' +
+    '<path d="' + line + '" fill="none" style="stroke:' + color + '" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"></path>' +
+    '<circle cx="' + x(pts.length - 1) + '" cy="' + y(last) + '" r="4.5" style="fill:' + color + '"></circle>' +
+    "</svg>" +
+    '<span class="curve-label top">' + esc(fmtMoney(max)) + '</span><span class="curve-label bottom">' + esc(fmtMoney(min)) + "</span>";
+}
+
+function monthlyBars(monthly) {
+  if (!monthly || !monthly.length) {
+    return '<div class="empty" style="padding:6px 20px 22px"><p>Close your first trade and your month-by-month results appear here.</p></div>';
+  }
+  const last = monthly.slice(-6);
+  const max = Math.max.apply(null, last.map(m => Math.abs(m.pnl)).concat([1]));
+  return '<div class="monthly">' + last.map(function (m) {
+    const h = Math.max(6, Math.round((Math.abs(m.pnl) / max) * 100));
+    return '<div class="month"><div class="bar-track"><div class="bar ' + (m.pnl < 0 ? "neg" : "") +
+      '" style="height:' + h + '%" title="' + esc(m.month + " · " + fmtSignedMoney(m.pnl) + " · " + m.trades + " trades") + '"></div></div>' +
+      '<span class="m-value ' + pnlClass(m.pnl) + '">' + (m.pnl >= 0 ? "+" : "") + fmtNum(m.pnl, 0) + "</span>" +
+      '<span class="m-label">' + esc(monthLabel(m.month)) + "</span></div>";
+  }).join("") + "</div>";
+}
+
+/* ----------------------------------------------------------------- journal */
+
+function filteredTrades() {
+  const f = ui.journal;
+  const q = f.q.trim().toLowerCase();
+  return state.trades.filter(function (t) {
+    if (f.status !== "all" && t.status !== f.status) return false;
+    if (f.pair !== "all" && t.symbol !== f.pair) return false;
+    if (q) {
+      const hay = [t.symbol, t.notes, t.tags, t.setupLabel, t.direction].join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderJournal() {
+  const pairs = Array.from(new Set(state.trades.map(t => t.symbol))).sort();
+  const s = state.stats;
+  return '<div class="toolbar">' +
+    '<input type="search" id="jq" placeholder="Search pair, tag or note" value="' + esc(ui.journal.q) + '" aria-label="Search trades">' +
+    '<select id="jstatus" aria-label="Filter by status">' +
+      '<option value="all"' + (ui.journal.status === "all" ? " selected" : "") + ">All trades</option>" +
+      '<option value="open"' + (ui.journal.status === "open" ? " selected" : "") + ">Open</option>" +
+      '<option value="closed"' + (ui.journal.status === "closed" ? " selected" : "") + ">Closed</option>" +
+    "</select>" +
+    '<select id="jpair" aria-label="Filter by pair">' +
+      '<option value="all"' + (ui.journal.pair === "all" ? " selected" : "") + ">All pairs</option>" +
+      pairs.map(p => '<option value="' + esc(p) + '"' + (ui.journal.pair === p ? " selected" : "") + ">" + esc(p) + "</option>").join("") +
+    "</select>" +
+    '<span class="spacer"></span>' +
+    '<span class="chip">Win rate <b>' + (s.winRate === null ? "—" : s.winRate + "%") + "</b></span>" +
+    '<span class="chip">Profit factor <b>' + (!s.trades ? "—" : s.profitFactor === null ? "∞" : fmtNum(s.profitFactor, 2)) + "</b></span>" +
+    '<span class="chip">Avg <b>' + (s.avgR === null ? "—" : (s.avgR > 0 ? "+" : "") + fmtNum(s.avgR, 2) + "R") + "</b></span>" +
+    "</div>" +
+    '<div class="panel"><div id="journalTable">' + journalTableHtml() + "</div></div>";
+}
+
+function journalTableHtml() {
+  const rows = filteredTrades();
+  if (!rows.length) {
+    const noTrades = !state.trades.length;
+    return emptyState("▤", noTrades ? "Your journal starts here" : "No trades match",
+      noTrades ? "Log each trade with its entry, stop, risk and a note on why you took it. Closed trades build your stats and equity curve."
+               : "Try a different search, or set the filters back to all.",
+      noTrades ? '<button class="btn primary small" data-action="new-trade">Log your first trade</button>'
+               : '<button class="btn ghost small" data-action="clear-filters">Clear filters</button>');
+  }
+  return '<div class="table-wrap"><table class="table journal-table"><thead><tr>' +
+    "<th>Date</th><th>Pair</th><th>Side</th><th class=\"num\">Entry</th><th class=\"num\">Exit</th>" +
+    "<th class=\"num\">Pips</th><th class=\"num\">R</th><th class=\"num\">Net P&L</th><th>Status</th><th></th>" +
+    "</tr></thead><tbody>" + rows.map(function (t) {
+      const open = t.status !== "closed";
+      return '<tr class="row-link journal-row" data-action="edit-trade" data-id="' + esc(t.id) + '">' +
+        '<td data-label="Date"><div class="mono">' + fmtDate(open ? t.openedAt : t.closedAt) + "</div>" +
+          '<div class="mini-sub faint">' + esc(t.tags || "") + "</div></td>" +
+        '<td data-label="Pair"><b>' + esc(symLabel(t.symbol)) + "</b></td>" +
+        '<td data-label="Side">' + dirTag(t.direction) + "</td>" +
+        '<td data-label="Entry" class="num mono">' + fmtPrice(t.symbol, t.entry) + "</td>" +
+        '<td data-label="Exit" class="num mono">' + (open ? "—" : fmtPrice(t.symbol, t.exit)) + "</td>" +
+        '<td data-label="Pips" class="num mono">' + (open || t.pips === null ? "—" : (t.pips > 0 ? "+" : "") + fmtNum(t.pips, 1)) + "</td>" +
+        '<td data-label="R" class="num mono">' + (open || t.r === null ? "—" : (t.r > 0 ? "+" : "") + fmtNum(t.r, 2) + "R") + "</td>" +
+        '<td data-label="Net P&L" class="num mono ' + pnlClass(t.netPnl) + '">' + (open ? "—" : fmtSignedMoney(t.netPnl)) + "</td>" +
+        '<td data-label="Status">' + (open ? '<span class="pill open">Open</span>'
+          : t.netPnl > 0 ? '<span class="pill triggered">Win</span>' : t.netPnl < 0 ? '<span class="pill invalidated">Loss</span>'
+          : '<span class="pill closed">Flat</span>') + "</td>" +
+        '<td data-label="">' + '<div class="row-actions">' +
+          (open ? '<button class="btn small" data-action="close-trade" data-id="' + esc(t.id) + '">Close</button>' : "") +
+          '<button class="icon-btn" title="Edit" data-action="edit-trade" data-id="' + esc(t.id) + '">' + icon("edit") + "</button>" +
+          '<button class="icon-btn del" title="Delete trade" data-action="delete-trade" data-id="' + esc(t.id) + '">' + icon("trash") + "</button>" +
+        "</div></td></tr>";
+    }).join("") + "</tbody></table></div>" + journalFoot(rows);
+}
+
+function journalFoot(rows) {
+  const closed = rows.filter(t => t.status === "closed");
+  const net = closed.reduce((sum, t) => sum + (Number(t.netPnl) || 0), 0);
+  const wins = closed.filter(t => Number(t.netPnl) > 0).length;
+  return '<div class="journal-foot"><span>Showing <b>' + plural(rows.length, "trade") + "</b></span>" +
+    (closed.length ? '<span>Net <b class="' + pnlClass(net) + '">' + fmtSignedMoney(net) + "</b></span>" +
+      "<span>Won <b>" + wins + " of " + closed.length + "</b></span>" : "") + "</div>";
+}
+
+/* ------------------------------------------------------------------ setups */
+
+function setupCard(s) {
+  const cls = s.status === "triggered" ? "triggered"
+    : s.status === "invalidated" || s.status === "done" ? "archived"
+    : s.crossed ? "at-entry" : s.near ? "approaching" : "";
+  const liveTone = s.crossed ? "hit" : s.near ? "near" : "";
+  return '<article class="setup-card ' + cls + '">' +
+    '<div class="setup-head"><div class="setup-id"><div class="pair-line"><span class="pair">' + esc(symLabel(s.symbol)) + "</span>" +
+      dirTag(s.direction) + "</div>" + (s.label ? '<span class="label">' + esc(s.label) + "</span>" : "") + "</div>" +
+      (s.status === "watching" ? '<span class="pill ' + esc(s.priority) + '">' + esc(s.priority[0].toUpperCase() + s.priority.slice(1)) + "</span>" : statusPill(s)) + "</div>" +
+    '<div class="levels">' +
+      "<div><span>Entry</span><b>" + fmtPrice(s.symbol, s.entry) + "</b></div>" +
+      '<div class="stop"><span>Stop</span><b>' + (s.stop ? fmtPrice(s.symbol, s.stop) : "—") + "</b></div>" +
+      '<div class="target"><span>Target</span><b>' + (s.target ? fmtPrice(s.symbol, s.target) : "—") + "</b></div>" +
+      "<div><span>R:R</span><b>" + rrText(s.rr) + "</b></div>" +
+    "</div>" +
+    '<div class="live-line"><span>Now</span><b data-price="' + esc(s.symbol) + '">' + fmtPrice(s.symbol, s.price) + "</b>" +
+      '<span class="' + liveTone + '" data-dist="' + esc(s.id) + '">' + setupDistanceText(s) + "</span>" +
+      (s.distancePips === null ? "" : '<span class="faint">alert at ' + fmtNum(s.threshold, 0) + " " + unitName(s.symbol) + "</span>") + "</div>" +
+    '<i class="meter"><b data-meter="' + esc(s.id) + '" style="width:' + meterWidth(s) + '%"></b></i>' +
+    (s.note ? '<p class="setup-note">' + esc(s.note) + "</p>" : "") +
+    '<div class="setup-actions">' +
+      (s.status === "watching"
+        ? '<button class="btn primary small" data-action="trigger-setup" data-id="' + esc(s.id) + '">' + icon("play") + "Trigger</button>" +
+          '<button class="btn ghost small" data-action="edit-setup" data-id="' + esc(s.id) + '">Edit</button>' +
+          '<button class="btn ghost small" data-action="set-setup-status" data-id="' + esc(s.id) + '" data-status="invalidated">Invalidate</button>'
+        : '<button class="btn ghost small" data-action="set-setup-status" data-id="' + esc(s.id) + '" data-status="watching">Reactivate</button>' +
+          '<button class="btn ghost small" data-action="edit-setup" data-id="' + esc(s.id) + '">Edit</button>') +
+      '<span class="spacer"></span>' +
+      '<button class="icon-btn" title="Chart" data-action="chart" data-symbol="' + esc(s.symbol) + '">' + icon("chart") + "</button>" +
+      '<button class="icon-btn del" title="Delete setup" data-action="delete-setup" data-id="' + esc(s.id) + '">' + icon("trash") + "</button>" +
+    "</div></article>";
+}
+
+function renderSetups() {
+  const watching = state.priority;
+  const triggered = state.setups.filter(s => s.status === "triggered");
+  const archived = state.setups.filter(s => s.status === "invalidated" || s.status === "done");
+  let html = '<div class="section-title"><h2>On watch</h2><span class="count">' + watching.length +
+    '</span><span class="spacer"></span><span class="muted" style="font-size:12.5px">Priority markets first, then closest to entry</span></div>';
+  html += watching.length
+    ? '<div class="setups-grid">' + watching.map(setupCard).join("") + "</div>"
+    : '<div class="panel">' + emptyState("◎", "No setups on watch", "Plan the trades you are waiting for: an entry, a stop, a target and how close price should get before we alert you.",
+        '<button class="btn primary small" data-action="new-setup">Plan a setup</button>') + "</div>";
+
+  if (triggered.length) {
+    html += '<div class="section-title"><h2>Triggered</h2><span class="count">' + triggered.length + "</span></div>" +
+      '<div class="setups-grid">' + triggered.map(setupCard).join("") + "</div>";
+  }
+  if (archived.length) {
+    html += '<div class="section-title"><h2>Finished</h2><span class="count">' + archived.length + "</span></div>" +
+      '<div class="setups-grid">' + archived.map(setupCard).join("") + "</div>";
+  }
+  return html;
+}
+
+/* ------------------------------------------------------------------- pairs */
+
+function pairCard(p) {
+  const q = quoteOf(p.symbol);
+  const stale = !q || isStale(q);
+  const change = q && q.changePct !== null && q.changePct !== undefined ? q.changePct : null;
+  const syn = synthetic(p.symbol);
+  return '<div class="pair-card ' + (p.priority ? "priority" : "") + (p.monitor ? "" : " paused") + '">' +
+    '<div class="pair-top"><div class="pair-name"><b>' + esc(symLabel(p.symbol)) + "</b><span>" +
+      esc(syn ? syn.name : pairKind(p.symbol)) + "</span></div>" +
+      '<div class="pair-price"><b data-price="' + esc(p.symbol) + '">' + fmtPrice(p.symbol, q ? q.price : null) + "</b>" +
+      (q && q.spread !== undefined && q.spread !== null ? '<span class="faint" style="font-weight:500">Spread ' + fmtNum(q.spread, 1) + " " + unitName(p.symbol) + "</span>" : "") +
+      '<span class="' + (change === null ? "faint" : change > 0 ? "pos" : change < 0 ? "neg" : "faint") + '" data-change="' +
+        esc(p.symbol) + '">' + (change === null ? (stale ? "no quote" : "—") : (change > 0 ? "+" : "") + fmtNum(change, 2) + "%") +
+      "</span></div></div>" +
+    '<div class="pair-foot">' +
+      '<button class="toggle star ' + (p.priority ? "on" : "") + '" data-action="toggle-priority" data-symbol="' + esc(p.symbol) +
+        '" title="Priority market">' + icon("star") + "Priority</button>" +
+      '<button class="toggle ' + (p.monitor ? "on" : "") + '" data-action="toggle-monitor" data-symbol="' + esc(p.symbol) +
+        '" title="Watch price">' + icon("eye") + (p.monitor ? "Live" : "Paused") + "</button>" +
+      '<span class="spacer"></span>' +
+      '<button class="icon-btn" title="Chart" data-action="chart" data-symbol="' + esc(p.symbol) + '">' + icon("chart") + "</button>" +
+      '<button class="icon-btn del" title="Remove market" data-action="remove-pair" data-symbol="' + esc(p.symbol) + '">' + icon("trash") + "</button>" +
+    "</div></div>";
+}
+
+function renderPairs() {
+  const sorted = state.pairs.slice().sort((a, b) => (b.priority - a.priority) || symLabel(a.symbol).localeCompare(symLabel(b.symbol), undefined, { numeric: true }));
+  const sections = MARKET_GROUPS.map(g => ({ name: g.name, items: sorted.filter(p => marketGroup(p.symbol) === g) }))
+    .concat([{ name: "Other", items: sorted.filter(p => !marketGroup(p.symbol)) }])
+    .filter(sec => sec.items.length);
+  const options = MARKET_GROUPS.flatMap(g => g.symbols).map(sym =>
+    '<option value="' + sym + '">' + esc(synthetic(sym) ? synthetic(sym).name : pairKind(sym)) + "</option>").join("");
+  return '<div class="panel"><div class="panel-body">' +
+    '<form id="pairForm" class="add-pair">' +
+      '<input name="symbol" list="marketCatalog" placeholder="Add a market: EURUSD, XAUUSD, R_75 (V75), STPRNG (Step 100)…" autocomplete="off" required aria-label="Market symbol">' +
+      '<datalist id="marketCatalog">' + options + "</datalist>" +
+      '<label class="check-line"><input type="checkbox" name="priority"> Priority</label>' +
+      '<button class="btn primary" type="submit">' + icon("plus") + "Add market</button>" +
+    "</form>" +
+    quickAdd() +
+    '<div class="field-note" style="margin-top:10px">Prices refresh every ' + (state.effectivePollSeconds || state.settings.pollSeconds) +
+      "s. Priority markets rank first on your watchlist. Volatility and Step indices are Deriv synthetics: they trade 24/7 and are priced by Deriv.</div>" +
+    "</div></div>" +
+    (sections.length
+      ? sections.map(sec =>
+          '<div class="section-title" style="margin-top:26px"><h2>' + esc(sec.name) + '</h2><span class="count">' + sec.items.length + "</span></div>" +
+          '<div class="pairs-grid" style="margin-top:0">' + sec.items.map(pairCard).join("") + "</div>").join("")
+      : '<div class="panel section-gap">' + emptyState("◈", "No markets yet", "Add what you trade, or add a whole group above, to start getting live prices.", "") + "</div>");
+}
+
+function quickAdd() {
+  const have = new Set(state.pairs.map(p => p.symbol));
+  const groups = MARKET_GROUPS.map(g => ({ g, missing: g.symbols.filter(sym => !have.has(sym)) })).filter(x => x.missing.length);
+  if (!groups.length) return "";
+  return '<div class="quick-add"><span class="field-note">Add a group:</span>' + groups.map(x =>
+    '<button type="button" class="chip" data-action="add-group" data-group="' + x.g.id + '">+ ' + esc(x.g.name) + " (" + x.missing.length + ")</button>").join("") + "</div>";
+}
+
+/* ------------------------------------------------------------------ alerts */
+
+function renderAlerts() {
+  const ntfyOn = !!(state.settings.ntfyTopic);
+  const tgOn = !!(state.settings.telegramToken && state.settings.telegramChatId);
+  const callOn = !!state.settings.callmebotUser;
+  const browserSupported = "Notification" in window;
+  const browserPermission = browserSupported ? Notification.permission : "unsupported";
+
+  const browserOn = browserPermission === "granted" && ui.browserAlerts;
+  const dot = (on, warn) => '<span class="state-dot ' + (on ? "on" : warn ? "warn" : "off") + '">' + (on ? "On" : warn ? "Blocked" : "Off") + "</span>";
+  return '<div class="channel-grid">' +
+    '<div class="channel ' + (ntfyOn ? "on" : "") + '"><div class="channel-top"><strong>Phone push (ntfy)</strong>' + dot(ntfyOn) + "</div>" +
+      "<p>" + (ntfyOn ? "Sending to topic <b>" + esc(state.settings.ntfyTopic) + "</b>." :
+        "Free phone notifications with no account. Install the ntfy app, pick a private topic and you are set.") + "</p>" +
+      '<button class="btn ghost small" data-view="settings">' + (ntfyOn ? "Manage topic" : "Set up ntfy") + "</button></div>" +
+    '<div class="channel ' + (tgOn ? "on" : "") + '"><div class="channel-top"><strong>Telegram</strong>' + dot(tgOn) + "</div>" +
+      "<p>" + (tgOn ? "Bot configured and ready." : "Create a bot with @BotFather, then add its token and your chat ID.") + "</p>" +
+      '<button class="btn ghost small" data-view="settings">' + (tgOn ? "Manage bot" : "Set up Telegram") + "</button></div>" +
+    '<div class="channel ' + (callOn ? "on" : "") + '"><div class="channel-top"><strong>Phone call (Telegram)</strong>' + dot(callOn) + "</div>" +
+      "<p>" + (callOn ? "Tradera rings <b>" + esc(state.settings.callmebotUser) + "</b> on Telegram and reads the alert aloud when price reaches an entry."
+        : "Get a real Telegram voice call when price hits your entry, so you never sleep through a setup.") + "</p>" +
+      '<button class="btn ghost small" data-' + (callOn ? 'action="test-call"' : 'view="settings"') + ">" + (callOn ? "Test call" : "Set up calls") + "</button></div>" +
+    '<div class="channel ' + (browserOn ? "on" : "") + '"><div class="channel-top"><strong>This browser</strong>' + dot(browserOn, browserPermission === "denied") + "</div>" +
+      "<p>" + (browserPermission === "granted"
+        ? (ui.browserAlerts ? "Browser alerts are on for this device." : "Permission granted — enable alerts to use them.")
+        : browserPermission === "denied" ? "Blocked in browser settings. Allow notifications for this page to enable."
+        : "Needs this tab open. Click to allow notifications.") + "</p>" +
+      '<button class="btn ghost small" data-action="enable-alerts">' +
+        (browserPermission === "granted" ? (ui.browserAlerts ? "Turned on" : "Turn on") : "Allow notifications") + "</button></div>" +
+    "</div>" +
+
+    '<div class="notice section-gap"><span class="n-ico">ⓘ</span><div><b>How alerts work.</b> Every ' +
+      (state.effectivePollSeconds || state.settings.pollSeconds) + "s the app checks live prices against your watching setups. When price is within a setup's alert distance " +
+      "(default " + state.settings.defaultThresholdPips + " pips for FX, points for crypto and indices), it fires once. It re-arms after price moves 1.6× that distance away. " +
+      "Browser alerts need this tab open; ntfy or Telegram reach your phone even when the tab is closed, " +
+      (state.realtime === false ? "through the scheduled Netlify check." : "as long as this app is running.") + "</div></div>" +
+
+    '<section class="panel section-gap">' +
+      '<div class="panel-head"><h2>Alert log</h2><span class="hint">' + state.alerts.length + " recent</span></div>" +
+      (state.alerts.length
+        ? state.alerts.map(function (a) {
+            const channels = (a.channels || []).map(c =>
+              '<span class="chip">' + esc(c.channel || c) + (c.ok === false ? " failed" : " sent") + "</span>").join("");
+            return '<div class="alert-row row-link" data-action="chart" data-symbol="' + esc(a.symbol) + '">' +
+              '<div class="alert-ico ' + (a.kind === "entry" ? "entry" : a.kind === "test" ? "test" : "") + '">' + (a.kind === "entry" ? "◎" : a.kind === "test" ? "✓" : "↗") + "</div>" +
+              '<div class="alert-main"><b>' + esc(a.symbol) + " · " +
+                esc(a.kind === "entry" ? "Entry reached" : a.kind === "test" ? "Test alert" : "Getting close to entry") + "</b>" +
+                "<p>" + esc(a.message) + "</p>" +
+                (channels ? '<div class="chips">' + channels + "</div>" : "") + "</div>" +
+              '<div class="alert-time">' + timeAgo(a.at) + "</div></div>";
+          }).join("")
+        : emptyState("◔", "No alerts yet", "When price nears one of your setups, the alert is logged here. Send a test alert to check your phone is wired up.", "")) +
+    "</section>";
+}
+
+/* ---------------------------------------------------------------- settings */
+
+function settingsSection(title, text, body) {
+  return '<div class="form-section"><div class="form-section-head"><h3>' + esc(title) + "</h3><p>" + text + "</p></div><div>" + body + "</div></div>";
+}
+
+function securitySection() {
+  if (!state.passwordSet) {
+    return settingsSection("Password", "Anyone who can open Tradera can see your journal. Set a password to require a login on every device.",
+      '<div class="form-grid">' +
+        '<label class="field"><span>New password <em>8+ characters</em></span><input id="pwNew" type="password" autocomplete="new-password"></label>' +
+        '<label class="field"><span>Repeat password</span><input id="pwRepeat" type="password" autocomplete="new-password"></label>' +
+      "</div>" +
+      '<div class="toolbar" style="margin:12px 0 0"><button class="btn primary small" type="button" data-action="set-password">Set password</button></div>');
+  }
+  return settingsSection("Password", "Tradera asks for your password on each new device. Logins last 30 days.",
+    '<div class="form-grid">' +
+      '<label class="field full"><span>Current password</span><input id="pwCurrent" type="password" autocomplete="current-password"></label>' +
+      '<label class="field"><span>New password <em>8+ characters</em></span><input id="pwNew" type="password" autocomplete="new-password"></label>' +
+      '<label class="field"><span>Repeat new password</span><input id="pwRepeat" type="password" autocomplete="new-password"></label>' +
+    "</div>" +
+    '<div class="toolbar" style="margin:12px 0 0">' +
+      '<button class="btn ghost small" type="button" data-action="set-password">Change password</button>' +
+      '<button class="btn ghost small" type="button" data-action="lock-desk">Log out</button>' +
+      '<button class="btn ghost small" type="button" data-action="logout-all">Log out other devices</button>' +
+      '<button class="btn danger small" type="button" data-action="disable-password">Turn off password</button>' +
+    "</div>" +
+    '<div class="field-note" style="margin-top:8px">Changing your password, or logging out other devices, signs out every other phone and browser.</div>');
+}
+
+function renderSettings() {
+  const s = state.settings;
+  const theme = store("theme") || "system";
+  return '<form id="settingsForm" class="panel"><div class="panel-body">' +
+    settingsSection("Appearance", "Tradera follows your device by default.",
+      '<div class="segmented" role="radiogroup" aria-label="Theme" style="max-width:340px">' +
+        [["system", "System"], ["dark", "Dark"], ["light", "Light"]].map(function (row) {
+          return '<label><input type="radio" name="theme" value="' + row[0] + '"' + (theme === row[0] ? " checked" : "") +
+            ' data-action="set-theme"><span>' + row[1] + "</span></label>";
+        }).join("") + "</div>") +
+
+    securitySection() +
+
+    settingsSection("Account", "Used to show your balance and work out returns.",
+      '<div class="form-grid">' +
+        '<label class="field"><span>Currency</span><input name="accountCurrency" value="' + esc(s.accountCurrency) + '" maxlength="6" autocomplete="off" placeholder="USD"></label>' +
+        '<label class="field"><span>Starting balance</span><input name="startingBalance" type="number" step="any" value="' + esc(s.startingBalance) + '"></label>' +
+      "</div>") +
+
+    settingsSection("Price feed", "Where live prices come from. Deriv gives live bid and ask prices for forex, gold and indices with no account or key.",
+      '<div class="form-grid">' +
+        '<label class="field full"><span>Source</span><select name="feed">' +
+          '<option value="deriv"' + (s.feed === "deriv" ? " selected" : "") + ">Deriv live bid/ask (recommended, no key)</option>" +
+          '<option value="oanda"' + (s.feed === "oanda" ? " selected" : "") + ">OANDA live bid/ask (needs OANDA token)</option>" +
+          '<option value="yahoo"' + (s.feed === "yahoo" ? " selected" : "") + ">Yahoo Finance (no key, can lag)</option>" +
+          '<option value="twelvedata"' + (s.feed === "twelvedata" ? " selected" : "") + ">Twelve Data (free key, 60s minimum)</option>" +
+          '<option value="demo"' + (s.feed === "demo" ? " selected" : "") + ">Demo prices (for testing)</option>" +
+        "</select></label>" +
+        '<label class="field"><span>OANDA API token <em>for OANDA</em></span><input name="oandaToken" type="password" value="' + esc(s.oandaToken) + '" autocomplete="off" placeholder="Paste from OANDA → Manage API Access"></label>' +
+        '<label class="field"><span>OANDA account</span><select name="oandaEnv">' +
+          '<option value="practice"' + (s.oandaEnv !== "live" ? " selected" : "") + ">Practice (demo)</option>" +
+          '<option value="live"' + (s.oandaEnv === "live" ? " selected" : "") + ">Live</option>" +
+        "</select></label>" +
+        '<label class="check-line full"><input type="checkbox" name="binanceCrypto"' + (s.binanceCrypto !== false ? " checked" : "") +
+          "> Use Binance for crypto (exact live BTC, ETH, SOL prices, no key)</label>" +
+        '<label class="field"><span>Twelve Data key <em>optional</em></span><input name="twelveDataKey" type="password" value="' + esc(s.twelveDataKey) + '" autocomplete="off" placeholder="Only needed for Twelve Data"></label>' +
+        '<label class="field"><span>Refresh every <em>seconds</em></span><input name="pollSeconds" type="number" min="5" max="600" step="1" value="' + esc(s.pollSeconds) + '"></label>' +
+        '<label class="field"><span>Default alert distance <em>pips / pts</em></span><input name="defaultThresholdPips" type="number" min="1" step="1" value="' + esc(s.defaultThresholdPips) + '"></label>' +
+      "</div>" +
+      '<div class="field-note" style="margin-top:10px">TradingView has no public price API, so Tradera can\'t read its prices directly. ' +
+        "Deriv covers forex, gold, silver and major indices for free. OANDA is an alternative if it is available in your country. " +
+        "Anything a source can't price falls back to Yahoo automatically. Long setups are judged on the ask and shorts on the bid, the prices your orders actually fill at.</div>") +
+
+    settingsSection("Notifications", "Get pinged on your phone when price nears an entry, even with Tradera closed.",
+      '<div class="form-grid">' +
+        '<label class="field full"><span>ntfy topic <em>phone push</em></span>' +
+          '<div style="display:flex;gap:6px"><input id="ntfyTopic" name="ntfyTopic" value="' + esc(s.ntfyTopic) + '" autocomplete="off" placeholder="e.g. tradera-yourname-8f3k">' +
+          '<button class="btn ghost small" type="button" data-action="gen-topic">Generate</button></div></label>' +
+        '<label class="field"><span>ntfy server</span><input name="ntfyServer" value="' + esc(s.ntfyServer) + '" autocomplete="off"></label>' +
+        '<label class="field"><span>Telegram bot token <em>optional</em></span><input name="telegramToken" type="password" value="' + esc(s.telegramToken) + '" autocomplete="off"></label>' +
+        '<label class="field"><span>Telegram chat ID</span>' +
+          '<div style="display:flex;gap:6px"><input id="telegramChatId" name="telegramChatId" value="' + esc(s.telegramChatId) + '" autocomplete="off" placeholder="Press Find after messaging your bot">' +
+          '<button class="btn ghost small" type="button" data-action="find-chat">Find</button></div></label>' +
+        '<label class="field"><span>Call me on Telegram <em>your @username</em></span>' +
+          '<div style="display:flex;gap:6px"><input name="callmebotUser" value="' + esc(s.callmebotUser) + '" autocomplete="off" placeholder="@yourusername">' +
+          '<button class="btn ghost small" type="button" data-action="test-call">Test call</button></div></label>' +
+        '<label class="check-line" style="align-self:end;padding-bottom:10px"><input type="checkbox" name="callOnApproach"' + (s.callOnApproach ? " checked" : "") +
+          "> Also ring me when price is getting close (call and urgent ntfy)</label>" +
+      "</div>" +
+      '<div class="field-note" style="margin-top:10px">ntfy: install the free ntfy app, subscribe to the topic above, save, then send a test alert. Entry alerts are sent as urgent; in the ntfy Android app turn on Settings → Keep alerting for highest priority so they keep ringing until you dismiss them. ' +
+        "Telegram: paste your bot token, press Start in your bot's chat, then press Find to fill in your chat ID. " +
+        "Calls: open Telegram, send /start to @CallMeBot_txtbot once to allow it, then save your @username here. Calls ring when price reaches an entry.</div>") +
+
+    settingsSection("Backup", state.realtime === false
+        ? "Your data lives in Netlify Blobs. Export a copy before you change deployments."
+        : "Your data lives on this computer in data/db.json. Export a copy now and then.",
+      '<div class="toolbar" style="margin:0">' +
+        '<button class="btn ghost small" type="button" data-action="export-json">Download backup</button>' +
+        '<label class="btn ghost small" style="cursor:pointer">Restore from backup<input type="file" id="importFile" accept="application/json" hidden></label>' +
+
+      "</div>") +
+
+    '<div class="form-actions"><span class="spacer"></span>' +
+      '<button class="btn" type="button" data-action="test-alert">Send test alert</button>' +
+      '<button class="btn primary" type="submit">Save settings</button>' +
+    "</div>" +
+    '<div class="form-error" id="settingsError" hidden></div>' +
+    "</div></form>";
+}
+
+/* ------------------------------------------------------------- view events */
+
+function attachViewListeners() {
+  if (ui.view === "journal") {
+    const q = document.getElementById("jq");
+    const st = document.getElementById("jstatus");
+    const pr = document.getElementById("jpair");
+    if (q) q.addEventListener("input", function () {
+      ui.journal.q = q.value;
+      const box = document.getElementById("journalTable");
+      if (box) box.innerHTML = journalTableHtml();
+    });
+    if (st) st.addEventListener("change", function () {
+      ui.journal.status = st.value;
+      const box = document.getElementById("journalTable");
+      if (box) box.innerHTML = journalTableHtml();
+    });
+    if (pr) pr.addEventListener("change", function () {
+      ui.journal.pair = pr.value;
+      const box = document.getElementById("journalTable");
+      if (box) box.innerHTML = journalTableHtml();
+    });
+  }
+
+  if (ui.view === "pairs") {
+    const form = document.getElementById("pairForm");
+    if (form) form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      const fd = new FormData(form);
+      try {
+        const next = await post("/api/pairs", {
+          symbol: fd.get("symbol"),
+          priority: fd.get("priority") === "on",
+          monitor: true
+        });
+        form.reset();
+        applyState(next);
+        toast("Market added", String(fd.get("symbol")).toUpperCase() + " is now on your watchlist.");
+      } catch (err) { toast("Could not add market", err.message, "error"); }
+    });
+  }
+
+  if (ui.view === "settings") {
+    const form = document.getElementById("settingsForm");
+    if (form) form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      const err = document.getElementById("settingsError");
+      err.hidden = true;
+      const fd = new FormData(form);
+      const payload = {};
+      ["accountCurrency", "startingBalance", "feed", "twelveDataKey", "oandaToken", "oandaEnv", "pollSeconds",
+        "defaultThresholdPips", "ntfyServer", "ntfyTopic", "telegramToken", "telegramChatId", "callmebotUser"].forEach(function (key) {
+        payload[key] = fd.get(key);
+      });
+      payload.binanceCrypto = fd.get("binanceCrypto") === "on";
+      payload.callOnApproach = fd.get("callOnApproach") === "on";
+      try {
+        const next = await post("/api/settings", payload);
+        applyState(next);
+        toast("Settings saved", "Your feed, alerts and account are up to date.");
+      } catch (error) {
+        err.textContent = error.message;
+        err.hidden = false;
+      }
+    });
+    const importInput = document.getElementById("importFile");
+    if (importInput) importInput.addEventListener("change", async function () {
+      const file = importInput.files && importInput.files[0];
+      if (!file) return;
+      if (!(await confirmDialog("Restore this backup?", "Your current trades, setups, markets and settings will be replaced with the contents of " + file.name + ".", "Restore"))) {
+        importInput.value = "";
+        return;
+      }
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        const next = await post("/api/import", parsed);
+        applyState(next);
+        toast("Backup imported", "Your book has been restored.");
+      } catch (error) {
+        toast("Import failed", error.message, "error");
+      }
+      importInput.value = "";
+    });
+  }
+}
+
+/* ------------------------------------------------------------------ live */
+
+function updateLiveNodes() {
+  if (!state) return;
+  document.querySelectorAll("[data-price]").forEach(function (el) {
+    const symbol = el.dataset.price;
+    const q = quoteOf(symbol);
+    const price = q ? Number(q.price) : null;
+    const last = el.dataset.last === undefined ? null : Number(el.dataset.last);
+    el.textContent = fmtPrice(symbol, price);
+    el.classList.toggle("faint", !!(q && isStale(q)));
+    if (price !== null && Number.isFinite(price)) {
+      // Flash green/red when the price moves so ticks are visible at a glance.
+      if (last !== null && price !== last) {
+        el.classList.remove("tick-up", "tick-down");
+        void el.offsetWidth;
+        el.classList.add(price > last ? "tick-up" : "tick-down");
+      }
+      el.dataset.last = String(price);
+    }
+  });
+  document.querySelectorAll("[data-change]").forEach(function (el) {
+    const symbol = el.dataset.change;
+    const q = quoteOf(symbol);
+    const change = q && q.changePct !== null && q.changePct !== undefined ? q.changePct : null;
+    el.textContent = change === null ? "—" : (change > 0 ? "+" : "") + fmtNum(change, 2) + "%";
+    el.className = change === null ? "faint" : change > 0 ? "pos" : change < 0 ? "neg" : "faint";
+  });
+  document.querySelectorAll("[data-dist]").forEach(function (el) {
+    const setup = findSetupView(el.dataset.dist);
+    if (!setup) return;
+    el.textContent = setupDistanceText(setup);
+    const runway = el.closest(".runway");
+    if (runway) runway.className = "runway row-link " + (setup.crossed ? "hit" : setup.near ? "near" : "");
+    const parent = el.closest(".dist");
+    if (parent) {
+      parent.className = "dist " + (setup.crossed ? "hit" : setup.near ? "near" : "");
+    } else {
+      el.className = setup.crossed ? "hit" : setup.near ? "near" : "";
+    }
+  });
+  document.querySelectorAll("[data-meter]").forEach(function (el) {
+    const setup = findSetupView(el.dataset.meter);
+    if (!setup) return;
+    el.style.width = meterWidth(setup) + "%";
+
+  });
+  updateFeedPill();
+  updateNavDot();
+}
+
+function findSetupView(id) {
+  const a = state.priority.find(s => s.id === id);
+  if (a) return a;
+  return state.setups.find(s => s.id === id) || null;
+}
+
+function updateNavDot() {
+  const dot = document.getElementById("navAlertDot");
+  if (dot) dot.hidden = !(state && state.priority.some(s => s.near));
+  const mobileDot = document.getElementById("mobileAlertDot");
+  if (mobileDot) mobileDot.hidden = !(state && state.priority.some(s => s.near));
+}
+
+function updateNotifyButton() {
+  const btn = document.getElementById("notifyBtn");
+  const mobile = document.querySelector(".mb-bell");
+  const supported = "Notification" in window;
+  const granted = supported && Notification.permission === "granted";
+  if (btn) {
+    if (!supported) {
+      btn.textContent = "Browser alerts not supported";
+      btn.disabled = true;
+    } else {
+      btn.classList.toggle("on", granted && ui.browserAlerts);
+      btn.textContent = granted ? (ui.browserAlerts ? "✓ Browser alerts on" : "Turn on browser alerts") : "Turn on browser alerts";
+    }
+  }
+  if (mobile) {
+    mobile.classList.toggle("on", granted && ui.browserAlerts);
+    mobile.title = supported
+      ? (granted && ui.browserAlerts ? "Browser alerts on" : "Enable browser alerts")
+      : "Browser alerts unavailable";
+  }
+}
+
+function liveUpdate(structural) {
+  if (!state) return;
+  updateLiveNodes();
+  const modalOpen = modal.open;
+  const tag = document.activeElement && document.activeElement.tagName;
+  const typing = (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") &&
+    document.activeElement.closest("#view");
+  const liveView = ["dashboard", "pairs", "setups", "alerts"].includes(ui.view);
+  if (structural && liveView && !modalOpen && !typing) {
+    renderView();
+    renderChrome();
+  }
+}
+
+function connectSSE() {
+  if (eventSource) eventSource.close();
+  eventSource = new EventSource("/api/events" + (deskKey() ? "?key=" + encodeURIComponent(deskKey()) : ""));
+  eventSource.onopen = function () {
+    sseFailures = 0;
+  };
+  eventSource.addEventListener("snapshot", function (event) {
+    try {
+      const payload = JSON.parse(event.data);
+      if (!state) return;
+      state.quotes = payload.quotes || {};
+      state.priority = payload.priority || [];
+      state.stats = payload.stats || state.stats;
+      state.feedStatus = payload.feedStatus || state.feedStatus;
+      if (payload.alerts) {
+        state.alerts = payload.alerts;
+        seedAlerts(payload.alerts);
+      }
+      liveUpdate(true);
+    } catch (_) { /* ignore malformed */ }
+  });
+  eventSource.addEventListener("alert", function (event) {
+    try {
+      const alert = JSON.parse(event.data);
+      if (alert && alert.id && seenAlerts.has(alert.id)) return;
+      if (alert && alert.id) seenAlerts.add(alert.id);
+      state.alerts.unshift(alert);
+      showAlert(alert);
+      liveUpdate(true);
+    } catch (_) { /* ignore */ }
+  });
+  eventSource.addEventListener("alerts", function (event) {
+    try {
+      state.alerts = JSON.parse(event.data);
+      seedAlerts(state.alerts);
+      liveUpdate(true);
+    } catch (_) { /* ignore */ }
+  });
+  eventSource.onerror = function () {
+    sseFailures++;
+    if (sseFailures >= 3) {
+      try { eventSource.close(); } catch (_) { /* ignore */ }
+      setFeedError("Live paused — polling");
+      if (!pollTimer && state) {
+        pollTimer = setInterval(pollState, Math.max(15000, Number(state.effectivePollSeconds) || 20) * 1000);
+      }
+    } else {
+      setFeedError("Reconnecting…");
+    }
+  };
+}
+
+function showAlert(alert) {
+  const entry = alert.kind === "entry";
+  toast(entry ? alert.symbol + " reached your entry" : alert.symbol + " is getting close",
+    alert.message, "alert", 12000);
+  if (ui.browserAlerts && "Notification" in window && Notification.permission === "granted") {
+    try {
+      const note = new Notification(entry ? alert.symbol + " at entry" : alert.symbol + " approaching entry", {
+        body: alert.message,
+        tag: alert.id,
+        silent: false
+      });
+      note.onclick = function () {
+        window.focus();
+        openChart(alert.symbol);
+        note.close();
+      };
+    } catch (_) { /* ignore */ }
+  }
+  beep();
+}
+
+function beep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.45);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.5);
+    osc.onended = function () { ctx.close(); };
+  } catch (_) { /* audio blocked until interaction */ }
+}
+
+/* ------------------------------------------------------------------- toasts */
+
+function toast(title, message, kind, timeout) {
+  const el = document.createElement("div");
+  el.className = "toast " + (kind || "");
+  el.innerHTML = '<div class="t-ico">' + (kind === "error" ? "!" : kind === "alert" ? "!" : "✓") + "</div>" +
+    '<div class="t-main"><strong>' + esc(title) + "</strong><span>" + esc(message) + "</span></div>" +
+    '<button class="icon-btn t-close" aria-label="Dismiss">' + icon("close") + "</button>";
+  el.style.setProperty("--life", (timeout || 6500) + "ms");
+  el.querySelector(".t-close").addEventListener("click", function () { el.remove(); });
+  toastsEl.appendChild(el);
+  while (toastsEl.children.length > 4) toastsEl.firstChild.remove();
+  setTimeout(function () { el.remove(); }, timeout || 6500);
+}
+
+/** In-app replacement for window.confirm() that resolves to true or false. */
+function confirmDialog(title, text, okLabel) {
+  const dlg = document.getElementById("confirmDialog");
+  document.getElementById("confirmTitle").textContent = title;
+  document.getElementById("confirmText").textContent = text;
+  document.getElementById("confirmOk").textContent = okLabel || "Delete";
+  dlg.returnValue = "";
+  return new Promise(function (resolve) {
+    dlg.addEventListener("close", function () { resolve(dlg.returnValue === "ok"); }, { once: true });
+    dlg.showModal();
+    document.getElementById("confirmOk").focus();
+  });
+}
+
+/* ------------------------------------------------------------------- modal */
+
+function openModal(html) {
+  modalBody.innerHTML = '<div class="modal-inner">' + html + "</div>";
+  if (!modal.open) modal.showModal();
+  modalBody.scrollTop = 0;
+}
+function closeModal() {
+  if (modal.open) modal.close();
+  modalBody.innerHTML = "";
+}
+function modalHeader(title, subtitle) {
+  return '<div class="modal-head"><div><h2>' + esc(title) + "</h2>" +
+    (subtitle ? "<p>" + esc(subtitle) + "</p>" : "") + "</div>" +
+    '<button class="icon-btn modal-close" data-close aria-label="Close">' + icon("close") + "</button></div>";
+}
+function formError() {
+  return '<div class="form-error" id="formError" hidden></div>';
+}
+
+function directionField(value) {
+  const v = value === "short" ? "short" : "long";
+  return '<div class="field"><span style="font-size:12.5px;font-weight:600;color:var(--muted)">Direction</span>' +
+    '<div class="segmented" role="radiogroup" aria-label="Direction" style="margin-top:6px">' +
+      '<label class="long"><input type="radio" name="direction" value="long"' + (v === "long" ? " checked" : "") + "><span>▲ Long</span></label>" +
+      '<label class="short"><input type="radio" name="direction" value="short"' + (v === "short" ? " checked" : "") + "><span>▼ Short</span></label>" +
+    "</div></div>";
+}
+
+/* --------------------------------------------------------------- trade form */
+
+function openTradeForm(trade, presetSetup) {
+  const t = trade || {};
+  const isEdit = !!trade;
+  const isClosed = t.status === "closed";
+  const pairOptions = state.pairs.map(p => '<option value="' + esc(p.symbol) + '"></option>').join("");
+  const title = isEdit ? "Edit trade" : presetSetup ? "Trigger setup" : "New trade";
+  const subtitle = presetSetup
+    ? presetSetup.symbol + " " + String(presetSetup.direction).toUpperCase() + " · entry " +
+      fmtPrice(presetSetup.symbol, presetSetup.entry)
+    : isEdit ? t.symbol + " · " + String(t.direction || "long").toUpperCase() : "Add your risk and Tradera works out R for you";
+
+  const symbol = t.symbol || (presetSetup && presetSetup.symbol) || "";
+  const direction = t.direction || (presetSetup && presetSetup.direction) || "long";
+  const entry = t.entry !== undefined ? t.entry : presetSetup ? presetSetup.entry : "";
+  const stop = t.stop !== undefined && t.stop !== null ? t.stop : presetSetup ? presetSetup.stop : "";
+  const target = t.target !== undefined && t.target !== null ? t.target : presetSetup ? presetSetup.target : "";
+  const setupId = t.setupId || (presetSetup && presetSetup.id) || "";
+
+  openModal(
+    modalHeader(title, subtitle) +
+    '<form id="tradeForm">' +
+      '<input type="hidden" name="id" value="' + esc(t.id || "") + '">' +
+      '<input type="hidden" name="setupId" value="' + esc(setupId) + '">' +
+      '<input type="hidden" name="setupLabel" value="' + esc(t.setupLabel || (presetSetup && presetSetup.label) || "") + '">' +
+      '<div class="form-grid">' +
+        '<label class="field"><span>Pair</span><input name="symbol" list="pairOptions" value="' + esc(symbol) + '" placeholder="EURUSD" required autocomplete="off">' +
+          '<datalist id="pairOptions">' + pairOptions + "</datalist></label>" +
+        directionField(direction) +
+        '<label class="field"><span>Status</span><select name="status" id="tradeStatus">' +
+          '<option value="open"' + (!isClosed ? " selected" : "") + ">Open</option>" +
+          '<option value="closed"' + (isClosed ? " selected" : "") + ">Closed</option></select></label>" +
+        '<label class="field"><span>Entry</span><input name="entry" type="number" step="any" value="' + esc(entry) + '" required></label>' +
+        '<label class="field"><span>Stop</span><input name="stop" type="number" step="any" value="' + esc(stop) + '"></label>' +
+        '<label class="field"><span>Target</span><input name="target" type="number" step="any" value="' + esc(target) + '"></label>' +
+        '<label class="field"><span>Exit <em>if closed</em></span><input name="exit" type="number" step="any" value="' + esc(t.exit !== null && t.exit !== undefined ? t.exit : "") + '"></label>' +
+        '<label class="field"><span>Size / lots <em>optional</em></span><input name="size" type="number" step="any" value="' + esc(t.size !== null && t.size !== undefined ? t.size : "") + '"></label>' +
+        '<label class="field"><span>Risk <em>account currency</em></span><input name="riskAmount" type="number" step="any" value="' + esc(t.riskAmount !== null && t.riskAmount !== undefined ? t.riskAmount : "") + '"></label>' +
+        '<label class="field"><span>P&L <em>blank = derive from risk</em></span><input name="pnl" type="number" step="any" value="' + esc(t.pnl !== null && t.pnl !== undefined ? t.pnl : "") + '"></label>' +
+        '<label class="field"><span>Fees</span><input name="fees" type="number" step="any" value="' + esc(t.fees !== null && t.fees !== undefined ? t.fees : "") + '"></label>' +
+        '<label class="field wide-sm"><span>Opened</span><input name="openedAt" type="datetime-local" value="' + esc(toLocalInput(t.openedAt)) + '"></label>' +
+        '<label class="field wide-sm"><span>Closed <em>if closed</em></span><input name="closedAt" type="datetime-local" value="' + esc(t.closedAt ? toLocalInput(t.closedAt) : "") + '"></label>' +
+        '<label class="field wide-sm"><span>Tags <em>comma separated</em></span><input name="tags" value="' + esc(t.tags || "") + '" placeholder="breakout, london"></label>' +
+      "</div>" +
+      '<label class="field" style="margin-top:12px"><span>Notes</span><textarea name="notes" placeholder="Why you took it, how you managed it, what you would change">' + esc(t.notes || "") + "</textarea></label>" +
+      '<div class="preview-box" id="tradePreview"></div>' +
+      formError() +
+      '<div class="form-actions"><button class="btn" type="button" data-close>Cancel</button>' +
+        '<button class="btn primary" type="submit">' + (isEdit ? "Save changes" : "Save trade") + "</button></div>" +
+    "</form>"
+  );
+
+  const form = document.getElementById("tradeForm");
+  const statusSelect = document.getElementById("tradeStatus");
+  const update = function () {
+    const v = k => {
+      const val = form.elements[k] ? form.elements[k].value : "";
+      return val === "" ? null : Number(val);
+    };
+    const entryV = v("entry"), stopV = v("stop"), targetV = v("target"), exitV = v("exit"), riskV = v("riskAmount");
+    const dir = form.elements.direction.value;
+    const pips = (a, b) => a === null || b === null ? null : Math.abs(a - b) / pipSize(form.elements.symbol.value || "EURUSD");
+    const reward = pips(entryV, targetV);
+    const riskPips = pips(entryV, stopV);
+    let rr = null;
+    if (entryV !== null && stopV !== null && targetV !== null) {
+      const denom = Math.abs(entryV - stopV);
+      if (denom) rr = (dir === "short" ? entryV - targetV : targetV - entryV) / denom;
+    }
+    let autoPnl = null;
+    if (form.elements.status.value === "closed" && v("pnl") === null && exitV !== null && riskV && entryV !== null && stopV !== null) {
+      const dist = Math.abs(entryV - stopV);
+      if (dist) autoPnl = riskV * (((exitV - entryV) * (dir === "short" ? -1 : 1)) / dist);
+    }
+    const typedPnl = v("pnl");
+    const feesV = v("fees") || 0;
+    const estNet = typedPnl !== null ? typedPnl - feesV : autoPnl !== null ? autoPnl - feesV : null;
+    document.getElementById("tradePreview").innerHTML =
+      "<span>Risk <b>" + (riskPips === null ? "—" : fmtNum(riskPips, 1) + " " + unitName(form.elements.symbol.value || "EURUSD")) + "</b></span>" +
+      "<span>Reward <b>" + (reward === null ? "—" : fmtNum(reward, 1) + " " + unitName(form.elements.symbol.value || "EURUSD")) + "</b></span>" +
+      "<span>R:R <b>" + (rr === null ? "—" : rrText(rr)) + "</b></span>" +
+      "<span>Est. net P&L <b class=\"" + pnlClass(estNet) + "\">" + (estNet === null ? "—" : fmtSignedMoney(estNet)) + "</b></span>";
+  };
+  form.addEventListener("input", update);
+  form.addEventListener("change", function (e) {
+    if (e.target === statusSelect) update();
+  });
+  update();
+
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    const err = document.getElementById("formError");
+    err.hidden = true;
+    const data = Object.fromEntries(new FormData(form).entries());
+    if (data.symbol) data.symbol = String(data.symbol).toUpperCase().replace(/\s+/g, "");
+    if (data.status === "closed" && !data.closedAt) data.closedAt = new Date().toISOString();
+    try {
+      const next = await post("/api/trades", data);
+      closeModal();
+      applyState(next);
+      toast(isEdit ? "Trade updated" : "Trade saved", (data.symbol || "") + " · " + (data.status === "closed" ? "closed" : "open"));
+    } catch (error) {
+      err.textContent = error.message;
+      err.hidden = false;
+    }
+  });
+}
+
+function openCloseForm(trade) {
+  openModal(
+    modalHeader("Close trade", trade.symbol + " · " + String(trade.direction).toUpperCase() + " · entry " + fmtPrice(trade.symbol, trade.entry)) +
+    '<form id="closeForm">' +
+      '<input type="hidden" name="id" value="' + esc(trade.id) + '">' +
+      '<div class="form-grid">' +
+        '<label class="field"><span>Exit price</span><input name="exit" type="number" step="any" required autofocus></label>' +
+        '<label class="field wide-sm"><span>Closed at</span><input name="closedAt" type="datetime-local" value="' + esc(toLocalInput()) + '"></label>' +
+        '<label class="field"><span>P&L <em>blank = derive from risk</em></span><input name="pnl" type="number" step="any" value=""></label>' +
+        '<label class="field"><span>Fees</span><input name="fees" type="number" step="any" value="' + esc(trade.fees || "") + '"></label>' +
+      "</div>" +
+      '<label class="field" style="margin-top:12px"><span>Closing notes</span><textarea name="notes">' + esc(trade.notes || "") + "</textarea></label>" +
+      '<div class="preview-box" id="closePreview"></div>' +
+      formError() +
+      '<div class="form-actions"><button class="btn" type="button" data-close>Cancel</button>' +
+        '<button class="btn primary" type="submit">Close trade</button></div>' +
+    "</form>"
+  );
+  const form = document.getElementById("closeForm");
+  const update = function () {
+    const exitRaw = form.elements.exit.value;
+    const exit = exitRaw === "" ? NaN : Number(exitRaw);
+    const pnl = form.elements.pnl.value === "" ? null : Number(form.elements.pnl.value);
+    const risk = n(trade.riskAmount);
+    const dir = String(trade.direction) === "short" ? -1 : 1;
+    const pips = Number.isFinite(exit) ? ((exit - Number(trade.entry)) * dir) / pipSize(trade.symbol) : null;
+    let estimate = pnl;
+    if (estimate === null && Number.isFinite(exit) && risk && trade.stop) {
+      const riskDist = Math.abs(Number(trade.entry) - Number(trade.stop));
+      if (riskDist) estimate = risk * (((exit - Number(trade.entry)) * dir) / riskDist);
+    }
+    const fees = n(form.elements.fees.value) || 0;
+    const net = estimate === null ? null : estimate - fees;
+    document.getElementById("closePreview").innerHTML =
+      "<span>Result <b>" + (pips === null ? "—" : (pips > 0 ? "+" : "") + fmtNum(pips, 1) + " " + unitName(trade.symbol)) + "</b></span>" +
+      "<span>Net P&L <b class=\"" + pnlClass(net) + "\">" + (net === null ? "—" : fmtSignedMoney(net)) + "</b></span>" +
+      "<span>R <b>" + (net !== null && risk ? (net / risk > 0 ? "+" : "") + fmtNum(net / risk, 2) + "R" : "—") + "</b></span>";
+  };
+  form.addEventListener("input", update);
+  update();
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    const err = document.getElementById("formError");
+    err.hidden = true;
+    const data = Object.fromEntries(new FormData(form).entries());
+    try {
+      const next = await post("/api/trades/" + encodeURIComponent(trade.id) + "/close", data);
+      closeModal();
+      applyState(next);
+      toast("Trade closed", trade.symbol + " · " + (data.pnl ? fmtSignedMoney(Number(data.pnl)) : "result recorded"));
+    } catch (error) {
+      err.textContent = error.message;
+      err.hidden = false;
+    }
+  });
+}
+
+/* --------------------------------------------------------------- setup form */
+
+function openSetupForm(setup) {
+  const s = setup || {};
+  const isEdit = !!setup;
+  const pairOptions = state.pairs.map(p => '<option value="' + esc(p.symbol) + '"></option>').join("");
+  openModal(
+    modalHeader(isEdit ? "Edit setup" : "New setup",
+      "Tradera alerts you when price gets within your alert distance of the entry.") +
+    '<form id="setupForm">' +
+      '<input type="hidden" name="id" value="' + esc(s.id || "") + '">' +
+      '<div class="form-grid">' +
+        '<label class="field"><span>Pair</span><input name="symbol" list="setupPairs" value="' + esc(s.symbol || "") + '" placeholder="EURUSD" required autocomplete="off"><datalist id="setupPairs">' + pairOptions + "</datalist></label>" +
+        directionField(s.direction) +
+        '<label class="field"><span>Entry</span><input name="entry" type="number" step="any" value="' + esc(s.entry !== undefined ? s.entry : "") + '" required></label>' +
+        '<label class="field"><span>Stop</span><input name="stop" type="number" step="any" value="' + esc(s.stop !== undefined && s.stop !== null ? s.stop : "") + '"></label>' +
+        '<label class="field"><span>Target</span><input name="target" type="number" step="any" value="' + esc(s.target !== undefined && s.target !== null ? s.target : "") + '"></label>' +
+        '<label class="field"><span>Priority</span><select name="priority">' +
+          ["high", "medium", "low"].map(v => '<option value="' + v + '"' + ((s.priority || "medium") === v ? " selected" : "") + ">" + v[0].toUpperCase() + v.slice(1) + "</option>").join("") +
+        "</select></label>" +
+        '<label class="field"><span>Alert distance <em>pips / pts</em></span><input name="thresholdPips" type="number" min="1" step="1" value="' + esc(s.thresholdPips !== undefined ? s.thresholdPips : state.settings.defaultThresholdPips) + '"></label>' +
+        '<label class="field"><span>Status</span><select name="status">' +
+          [["watching", "Watching"], ["triggered", "Triggered"], ["invalidated", "Invalidated"], ["done", "Done"]].map(function (row) {
+            return '<option value="' + row[0] + '"' + ((s.status || "watching") === row[0] ? " selected" : "") + ">" + row[1] + "</option>";
+          }).join("") +
+        "</select></label>" +
+        '<label class="field full"><span>Label <em>optional</em></span><input name="label" value="' + esc(s.label || "") + '" placeholder="e.g. London sweep of Asian low"></label>' +
+      "</div>" +
+      '<label class="field" style="margin-top:12px"><span>Notes</span><textarea name="note" placeholder="Why this level, what confirms it, what cancels it">' + esc(s.note || "") + "</textarea></label>" +
+      '<div class="preview-box" id="setupPreview"></div>' +
+      formError() +
+      '<div class="form-actions"><button class="btn" type="button" data-close>Cancel</button>' +
+        '<button class="btn primary" type="submit">' + (isEdit ? "Save setup" : "Start watching") + "</button></div>" +
+    "</form>"
+  );
+  const form = document.getElementById("setupForm");
+  const update = function () {
+    const entry = n(form.elements.entry.value);
+    const stop = n(form.elements.stop.value);
+    const target = n(form.elements.target.value);
+    const symbol = (form.elements.symbol.value || "").toUpperCase();
+    const dir = form.elements.direction.value;
+    const quote = quoteOf(symbol);
+    let rr = null;
+    if (entry !== null && stop !== null && target !== null && Math.abs(entry - stop)) {
+      rr = (dir === "short" ? entry - target : target - entry) / Math.abs(entry - stop);
+    }
+    const dist = quote && entry !== null ? Math.abs(quote.price - entry) / pipSize(symbol || "EURUSD") : null;
+    document.getElementById("setupPreview").innerHTML =
+      "<span>R:R <b>" + (rr === null ? "—" : rrText(rr)) + "</b></span>" +
+      "<span>Risk <b>" + (entry !== null && stop !== null ? fmtNum(Math.abs(entry - stop) / pipSize(symbol || "EURUSD"), 1) + " " + unitName(symbol || "EURUSD") : "—") + "</b></span>" +
+      "<span>Live <b>" + (quote ? fmtPrice(symbol, quote.price) : "—") + "</b></span>" +
+      "<span>Distance <b>" + (dist === null ? "—" : fmtNum(dist, 1) + " " + unitName(symbol || "EURUSD")) + "</b></span>";
+  };
+  form.addEventListener("input", update);
+  form.addEventListener("change", update);
+  update();
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    const err = document.getElementById("formError");
+    err.hidden = true;
+    const data = Object.fromEntries(new FormData(form).entries());
+    if (data.symbol) data.symbol = String(data.symbol).toUpperCase().replace(/\s+/g, "");
+    try {
+      const next = await post("/api/setups", data);
+      closeModal();
+      applyState(next);
+      toast(isEdit ? "Setup updated" : "Setup added", data.symbol + " · alerts at " + data.thresholdPips + " " + unitName(data.symbol));
+    } catch (error) {
+      err.textContent = error.message;
+      err.hidden = false;
+    }
+  });
+}
+
+/* ------------------------------------------------------------------- chart */
+
+function tvSymbol(symbol) {
+  const s = String(symbol || "").toUpperCase();
+  if (s === "XAUUSD") return "OANDA:XAUUSD";
+  if (s === "XAGUSD") return "OANDA:XAGUSD";
+  if (s === "GOLD") return "OANDA:XAUUSD";
+  if (s === "SILVER") return "OANDA:XAGUSD";
+  if (s === "BTCUSD") return "COINBASE:BTCUSD";
+  if (s === "ETHUSD") return "COINBASE:ETHUSD";
+  if (s === "US30") return "DJ:DJI";
+  if (s === "NAS100") return "NASDAQ:NDX";
+  if (s === "SPX500") return "SP:SPX";
+  if (/^[A-Z]{6}$/.test(s)) return "FX:" + s;
+  return s;
+}
+
+function openChart(symbol) {
+  const q = quoteOf(symbol);
+  if (synthetic(symbol)) {
+    openModal(
+      modalHeader(symLabel(symbol), q ? fmtPrice(symbol, q.price) + " now" : synthetic(symbol).name) +
+      '<div class="notice"><span class="n-ico">ⓘ</span><div><b>' + esc(synthetic(symbol).name) + " is a Deriv synthetic.</b> " +
+        "TradingView does not chart it. Open it in Deriv Trader or your Deriv MT5 terminal to see the chart; Tradera keeps watching the price for your alerts.</div></div>"
+    );
+    return;
+  }
+  openModal(
+    modalHeader(symbol, q ? fmtPrice(symbol, q.price) + (q.changePct !== null && q.changePct !== undefined
+      ? ", " + (q.changePct > 0 ? "+" : "") + fmtNum(q.changePct, 2) + "% today" : "") : "Live chart") +
+    '<div class="tv-chart" id="tvChart"></div>' +
+    '<div class="preview-box" style="margin-top:12px"><span>Chart by TradingView</span>' +
+      '<a href="https://www.tradingview.com/chart/?symbol=' + encodeURIComponent(symbol) + '" target="_blank" rel="noopener">Open on TradingView</a></div>'
+  );
+  const container = document.getElementById("tvChart");
+  if (!container) return;
+  const wrapper = document.createElement("div");
+  wrapper.className = "tradingview-widget-container";
+  wrapper.style.height = "100%";
+  const widget = document.createElement("div");
+  widget.className = "tradingview-widget-container__widget";
+  widget.style.height = "100%";
+  wrapper.appendChild(widget);
+  const script = document.createElement("script");
+  script.type = "text/javascript";
+  script.async = true;
+  script.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+  script.text = JSON.stringify({
+    symbol: tvSymbol(symbol),
+    interval: "60",
+    timezone: "Etc/UTC",
+    theme: currentTheme(),
+    style: "1",
+    locale: "en",
+    autosize: true,
+    hide_side_toolbar: true,
+    allow_symbol_change: true,
+    details: false,
+    backgroundColor: currentTheme() === "dark" ? "#10141B" : "#FFFFFF",
+    gridColor: currentTheme() === "dark" ? "rgba(255,255,255,0.05)" : "rgba(16,24,40,0.06)"
+  });
+  wrapper.appendChild(script);
+  container.appendChild(wrapper);
+}
+
+/* ----------------------------------------------------------------- actions */
+
+document.addEventListener("click", async function (e) {
+  const close = e.target.closest("[data-close]");
+  if (close) { closeModal(); return; }
+
+  const navBtn = e.target.closest("[data-view]");
+  if (navBtn && !e.target.closest("[data-action]")) {
+    setView(navBtn.dataset.view);
+    return;
+  }
+
+  const el = e.target.closest("[data-action]");
+  if (!el) return;
+  const action = el.dataset.action;
+  const id = el.dataset.id;
+  const symbol = el.dataset.symbol;
+
+  try {
+    if (action === "new-trade") return openTradeForm();
+    if (action === "new-setup") return openSetupForm();
+    if (action === "edit-trade") {
+      const trade = state.trades.find(t => t.id === id);
+      if (trade) openTradeForm(trade);
+      return;
+    }
+    if (action === "close-trade") {
+      const trade = state.trades.find(t => t.id === id);
+      if (trade) openCloseForm(trade);
+      return;
+    }
+    if (action === "edit-setup") {
+      const setup = state.setups.find(s => s.id === id);
+      if (setup) openSetupForm(setup);
+      return;
+    }
+    if (action === "trigger-setup") {
+      const setup = state.setups.find(s => s.id === id);
+      if (setup) openTradeForm(null, setup);
+      return;
+    }
+    if (action === "delete-trade") {
+      const trade = state.trades.find(t => t.id === id);
+      if (!(await confirmDialog("Delete this trade?", (trade ? trade.symbol + " will be removed from your journal and stats. " : "") + "This cannot be undone."))) return;
+      applyState(await api("/api/trades/" + encodeURIComponent(id), { method: "DELETE" }));
+      toast("Trade deleted", "Your journal and stats are updated.");
+      return;
+    }
+    if (action === "delete-setup") {
+      if (!(await confirmDialog("Delete this setup?", "Tradera will stop watching it. This cannot be undone."))) return;
+      applyState(await api("/api/setups/" + encodeURIComponent(id), { method: "DELETE" }));
+      toast("Setup deleted", "Tradera stopped watching it.");
+      return;
+    }
+    if (action === "set-setup-status") {
+      applyState(await post("/api/setups/" + encodeURIComponent(id) + "/status", { status: el.dataset.status }));
+      toast(el.dataset.status === "watching" ? "Back on watch" : "Setup invalidated",
+        el.dataset.status === "watching" ? "Tradera is watching this setup again." : "It moved to Finished. Reactivate it any time.");
+      return;
+    }
+    if (action === "chart") return openChart(symbol);
+    if (action === "export-json") return exportJSON();
+    if (action === "lock-desk") {
+      signOutLocally();
+      showGate("password");
+      return;
+    }
+    if (action === "set-password") {
+      const val = id => (document.getElementById(id) || {}).value || "";
+      if (val("pwNew").length < 8) return toast("Password too short", "Use at least 8 characters.", "error");
+      if (val("pwNew") !== val("pwRepeat")) return toast("Passwords don't match", "Type the same new password in both boxes.", "error");
+      const had = state.passwordSet;
+      const next = await post("/api/auth/password", { current: val("pwCurrent"), password: val("pwNew") });
+      store("key", next.token);
+      if (eventSource) connectSSE();
+      applyState(next);
+      toast(had ? "Password changed" : "Password set", had ? "Other devices have been logged out." : "Tradera will ask for it on every new device.");
+      return;
+    }
+    if (action === "logout-all") {
+      const next = await post("/api/auth/logout-all");
+      store("key", next.token);
+      if (eventSource) connectSSE();
+      applyState(next);
+      toast("Other devices logged out", "This device stays logged in.");
+      return;
+    }
+    if (action === "disable-password") {
+      const current = (document.getElementById("pwCurrent") || {}).value || "";
+      if (!current) return toast("Enter your current password", "Type it in Current password, then press Turn off password.", "error");
+      if (!(await confirmDialog("Turn off your password?", "Anyone who can open Tradera will be able to see and change your journal.", "Turn off"))) return;
+      applyState(await post("/api/auth/disable", { current }));
+      toast("Password turned off", "Tradera no longer asks for a login.");
+      return;
+    }
+    if (action === "toggle-priority") {
+      const pair = state.pairs.find(p => p.symbol === symbol);
+      if (!pair) return;
+      applyState(await patch("/api/pairs/" + encodeURIComponent(symbol), { priority: !pair.priority }));
+      return;
+    }
+    if (action === "toggle-monitor") {
+      const pair = state.pairs.find(p => p.symbol === symbol);
+      if (!pair) return;
+      applyState(await patch("/api/pairs/" + encodeURIComponent(symbol), { monitor: !pair.monitor }));
+      return;
+    }
+    if (action === "remove-pair") {
+      if (!(await confirmDialog("Remove " + symbol + "?", "Any setups for " + symbol + " are removed too. Your journal keeps its trades.", "Remove"))) return;
+      applyState(await api("/api/pairs/" + encodeURIComponent(symbol), { method: "DELETE" }));
+      toast("Market removed", symbol + " is off your watchlist.");
+      return;
+    }
+    if (action === "test-alert") {
+      el.disabled = true;
+      try {
+        const result = await post("/api/test-alert");
+        const ok = (result.results || []).filter(r => r.ok).map(r => r.channel);
+        const failed = (result.results || []).filter(r => !r.ok);
+        if (ok.length) toast("Test alert sent", "Delivered via " + ok.join(" and ") + ".");
+        if (failed.length) toast("Some channels failed", failed.map(f => f.channel + ": " + f.error).join(" · "), "error");
+        if (!result.results.length) toast("Nothing configured", "Add an ntfy topic or Telegram bot in Settings.", "error");
+      } catch (err) {
+        toast("Test failed", err.message, "error");
+      } finally {
+        el.disabled = false;
+      }
+      return;
+    }
+    if (action === "find-chat") {
+      const tokenInput = document.querySelector('input[name="telegramToken"]');
+      el.disabled = true;
+      try {
+        const next = await post("/api/telegram/find-chat", { token: tokenInput ? tokenInput.value : "" });
+        const found = next.foundChat || {};
+        applyState(next);
+        toast("Chat ID found", "Alerts will go to " + (found.name || "your chat") + " (" + found.id + ").");
+      } catch (err) {
+        toast("Could not find your chat", err.message, "error");
+      } finally {
+        el.disabled = false;
+      }
+      return;
+    }
+    if (action === "test-call") {
+      el.disabled = true;
+      try {
+        const result = await post("/api/test-call");
+        const r = (result.results || [])[0] || {};
+        if (r.ok) toast("Calling you now", "Pick up on Telegram. If nothing rings, check that you sent /start to @CallMeBot_txtbot.");
+        else toast("Call failed", r.error || "CallMeBot did not accept the call.", "error");
+      } catch (err) {
+        toast("Call failed", err.message, "error");
+      } finally {
+        el.disabled = false;
+      }
+      return;
+    }
+    if (action === "enable-alerts") return askNotificationPermission();
+    if (action === "toggle-theme") {
+      const dark = document.documentElement.dataset.theme
+        ? document.documentElement.dataset.theme === "dark"
+        : !matchMedia("(prefers-color-scheme: light)").matches;
+      return setTheme(dark ? "light" : "dark");
+    }
+    if (action === "set-theme") return setTheme(el.value);
+    if (action === "hide-checklist") {
+      store("hideChecklist", "1");
+      return renderView();
+    }
+    if (action === "clear-filters") {
+      ui.journal = { q: "", status: "all", pair: "all" };
+      return renderView();
+    }
+    if (action === "add-group") {
+      const group = MARKET_GROUPS.find(g => g.id === el.dataset.group);
+      if (!group) return;
+      const next = await post("/api/pairs/bulk", { symbols: group.symbols });
+      applyState(next);
+      toast(group.name + " added", (next.added || 0) + " markets are now on your watchlist.");
+      return;
+    }
+    if (action === "quick-pair") {
+      applyState(await post("/api/pairs", { symbol: symbol, priority: false, monitor: true }));
+      toast("Market added", symbol + " is now on your watchlist.");
+      return;
+    }
+    if (action === "gen-topic") {
+      const chars = "abcdefghijkmnpqrstuvwxyz23456789";
+      let topic = "tradera-";
+      for (let i = 0; i < 12; i++) topic += chars[Math.floor(Math.random() * chars.length)];
+      const input = document.getElementById("ntfyTopic");
+      if (input) input.value = topic;
+      toast("Topic generated", "Save settings, then subscribe to this topic in the ntfy app.");
+      return;
+    }
+  } catch (err) {
+    toast("Something went wrong", err.message, "error");
+  }
+});
+
+/* -------------------------------------------------------------------- misc */
+
+async function exportJSON() {
+  try {
+    const res = await fetch("/api/export", { headers: authHeaders(), cache: "no-store" });
+    if (res.status === 401) { showGate(); return; }
+    if (!res.ok) throw new Error("Export failed (" + res.status + ")");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "tradera-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1500);
+    toast("Backup downloaded", "Your journal and settings were exported as JSON.");
+  } catch (err) {
+    toast("Export failed", err.message, "error");
+  }
+}
+
+function setView(view) {
+  if (!VIEW_META[view]) view = "dashboard";
+  ui.view = view;
+  if (location.hash.slice(1) !== view) history.replaceState(null, "", "#" + view);
+  renderChrome();
+  renderView();
+  window.scrollTo({ top: 0, behavior: "auto" });
+}
+
+function askNotificationPermission() {
+  if (!("Notification" in window)) {
+    toast("Not supported", "This browser can't show notifications. Use ntfy or Telegram instead.", "error");
+    return;
+  }
+  if (Notification.permission === "denied") {
+    toast("Notifications blocked", "Allow notifications for this page in your browser's site settings, then reload.", "error");
+    return;
+  }
+  Notification.requestPermission().then(function (permission) {
+    if (permission === "granted") {
+      ui.browserAlerts = true;
+      store("browserAlerts", "1");
+      updateNotifyButton();
+      renderChrome();
+      if (ui.view === "alerts") renderView();
+      toast("Browser alerts on", "You'll get a notification here when price nears an entry.");
+      try {
+        new Notification("Tradera alerts are on", { body: "You will hear from us here when price nears an entry." });
+      } catch (_) { /* ignore */ }
+    } else {
+      if (ui.view === "alerts") renderView();
+      toast("Alerts not enabled", "You can enable browser notifications later from Alerts.", "error");
+    }
+  });
+}
+
+document.getElementById("notifyBtn").addEventListener("click", askNotificationPermission);
+
+modal.addEventListener("click", function (e) {
+  if (e.target === modal) closeModal();
+});
+modal.addEventListener("close", function () {
+  modalBody.innerHTML = "";
+});
+
+window.addEventListener("hashchange", function () {
+  const view = location.hash.slice(1);
+  if (VIEW_META[view] && view !== ui.view) setView(view);
+});
+
+function currentTheme() {
+  const t = document.documentElement.dataset.theme;
+  if (t) return t;
+  return matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+}
+
+function setTheme(theme) {
+  if (theme === "light" || theme === "dark") {
+    document.documentElement.dataset.theme = theme;
+    store("theme", theme);
+  } else {
+    delete document.documentElement.dataset.theme;
+    store("theme", null);
+  }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.content = currentTheme() === "light" ? "#FFFFFF" : "#0E1218";
+  if (ui.view === "dashboard") renderView();
+}
+
+/* Forex sessions in each centre's local time, so daylight saving is handled. */
+const SESSIONS = [
+  { name: "Sydney", tz: "Australia/Sydney", open: 7, close: 16 },
+  { name: "Tokyo", tz: "Asia/Tokyo", open: 9, close: 18 },
+  { name: "London", tz: "Europe/London", open: 8, close: 17 },
+  { name: "New York", tz: "America/New_York", open: 8, close: 17 }
+];
+
+function sessionOpen(session, now) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: session.tz, weekday: "short", hour: "numeric", hourCycle: "h23" }).formatToParts(now);
+    const day = parts.find(p => p.type === "weekday").value;
+    const hour = Number(parts.find(p => p.type === "hour").value);
+    return day !== "Sat" && day !== "Sun" && hour >= session.open && hour < session.close;
+  } catch (_) {
+    return false;
+  }
+}
+
+function renderSessions() {
+  const el = document.getElementById("sessions");
+  if (!el) return;
+  const now = new Date();
+  const open = SESSIONS.map(s => sessionOpen(s, now));
+  const note = open[2] && open[3] ? "London and New York overlap"
+    : open.every(x => !x) ? (now.getUTCDay() === 6 || now.getUTCDay() === 0 ? "Markets closed for the weekend" : "Between sessions") : "";
+  el.innerHTML = SESSIONS.map((s, i) =>
+    '<span class="session ' + (open[i] ? "open" : "") + '" title="' + s.name + (open[i] ? " session is open" : " session is closed") + '"><i></i>' + s.name + "</span>").join("") +
+    (note ? '<span class="session-note">' + note + "</span>" : "");
+}
+
+document.addEventListener("keydown", function (e) {
+  if (e.metaKey || e.ctrlKey || e.altKey || !state) return;
+  const tag = e.target && e.target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target && e.target.isContentEditable)) return;
+  if (modal.open || document.getElementById("confirmDialog").open) return;
+  const views = ["dashboard", "journal", "setups", "pairs", "alerts", "settings"];
+  const key = e.key.toLowerCase();
+  if (key === "n") { e.preventDefault(); openTradeForm(); }
+  else if (key === "s") { e.preventDefault(); openSetupForm(); }
+  else if (/^[1-6]$/.test(key)) { e.preventDefault(); setView(views[Number(key) - 1]); }
+});
+
+function startClock() {
+  const el = document.getElementById("clock");
+  const tick = function () {
+    if (el) el.textContent = new Date().toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) + " local";
+    renderSessions();
+  };
+  tick();
+  clockTimer = setInterval(tick, 15000);
+}
+
+async function boot() {
+  startClock();
+  const hash = location.hash.slice(1);
+  if (VIEW_META[hash]) ui.view = hash;
+  try {
+    state = await api("/api/state");
+  } catch (err) {
+    if (!document.getElementById("gate").hidden) return;
+    viewEl.innerHTML = '<div class="panel"><div class="panel-body">' +
+      '<div class="form-error">Tradera could not reach its server. Running locally? Start it with <b>node server.js</b> (or double-click <b>start.cmd</b>). On Netlify, check that functions deployed and <b>DESK_PASSCODE</b> is set, then reload.</div>' +
+      "</div></div>";
+    setFeedError("Server offline");
+    return;
+  }
+  startApp(state);
+}
+
+function startApp(next) {
+  hideGate();
+  state = next;
+  seedAlerts(state.alerts);
+  updateNotifyButton();
+  renderChrome();
+  renderView();
+  if (state.realtime === false) startPolling();
+  else connectSSE();
+}
+
+const gateForm = document.getElementById("gateForm");
+if (gateForm) {
+  gateForm.addEventListener("submit", async function (e) {
+    e.preventDefault();
+    const input = document.getElementById("gateKey");
+    const error = document.getElementById("gateError");
+    const key = String(input.value || "").trim();
+    if (!key) return;
+    error.hidden = true;
+    try {
+      let token = key;
+      if (ui.authMode !== "passcode") {
+        const login = await fetch("/api/auth/login", {
+          method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+          body: JSON.stringify({ password: key })
+        });
+        const data = await login.json().catch(() => ({}));
+        if (!login.ok || !data.token) {
+          error.textContent = data.error || "Could not log in (" + login.status + ")";
+          error.hidden = false;
+          input.select();
+          return;
+        }
+        token = data.token;
+      }
+      const res = await fetch("/api/state", { headers: { "x-desk-key": token }, cache: "no-store" });
+      if (res.status === 401) {
+        error.textContent = ui.authMode === "passcode" ? "That passcode is not correct." : "That password is not correct.";
+        error.hidden = false;
+        return;
+      }
+      if (!res.ok) throw new Error("Server error (" + res.status + ")");
+      store("key", token);
+      startApp(await res.json());
+      toast("Logged in", "Welcome back to Tradera.");
+    } catch (err) {
+      error.textContent = err.message;
+      error.hidden = false;
+    }
+  });
+}
+
+document.addEventListener("visibilitychange", function () {
+  if (!document.hidden && state && state.realtime === false) pollState();
+});
+
+if ("serviceWorker" in navigator &&
+  (location.protocol === "https:" || location.hostname === "127.0.0.1" || location.hostname === "localhost")) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("/sw.js").catch(function () { /* offline shell is optional */ });
+  });
+}
+
+boot();
