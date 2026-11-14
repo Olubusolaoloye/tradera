@@ -7,7 +7,7 @@
 
 const assert = require("node:assert");
 const core = require("../lib/desk-core");
-const { createHandler, createMemoryStore, apiPath } = require("../lib/serverless");
+const { createHandler, createMemoryStore, createMemoryBlobs, docStore, pollAll, apiPath } = require("../lib/serverless");
 
 let passed = 0;
 async function test(name, fn) {
@@ -279,7 +279,7 @@ async function test(name, fn) {
   });
 
   await test("Netlify: app password replaces the passcode, passcode stays a master key", async () => {
-    const h = createHandler({ store: createMemoryStore(null), passcode: "1234" });
+    const h = createHandler({ accounts: false, store: createMemoryStore(null), passcode: "1234" });
     const call = (method, path, key, body) => h({ httpMethod: method, path, headers: key ? { "x-desk-key": key } : {}, body: body ? JSON.stringify(body) : undefined });
     let res = await call("POST", "/api/auth/password", "1234", { password: "correct horse" });
     assert.equal(res.statusCode, 200);
@@ -293,7 +293,7 @@ async function test(name, fn) {
   });
 
   const mem = createMemoryStore(null);
-  const handler = createHandler({ store: mem, passcode: "1234" });
+  const handler = createHandler({ accounts: false, store: mem, passcode: "1234" });
 
   await test("rejects missing passcode", async () => {
     const res = await handler({ httpMethod: "GET", path: "/api/state", headers: {} });
@@ -330,6 +330,122 @@ async function test(name, fn) {
     });
     assert.equal(res.statusCode, 400);
     assert.match(JSON.parse(res.body).error, /Invalid JSON/);
+  });
+
+  // ---------------------------------------------------------------- accounts
+  const blobs = createMemoryBlobs();
+  const acc = createHandler({ accounts: true, blobs });
+  const call = async (method, path, data, token) => {
+    const res = await acc({
+      httpMethod: method, path,
+      headers: token ? { "x-desk-key": token } : {},
+      body: data ? JSON.stringify(data) : undefined
+    });
+    return { status: res.statusCode, body: JSON.parse(res.body) };
+  };
+
+  // A pre-accounts journal protected by its old app password.
+  {
+    const old = core.createDesk({ store: docStore(blobs, "db.json"), realtime: false });
+    await old.load();
+    await old.handle("POST", "/api/setups", { symbol: "GBPUSD", direction: "short", entry: 1.3, label: "old journal setup" });
+    await old.handle("POST", "/api/auth/password", { password: "old-password-1" });
+    await old.save(true);
+  }
+
+  await test("accounts: state needs a login", async () => {
+    const res = await call("GET", "/api/state");
+    assert.equal(res.status, 401);
+    assert.equal(res.body.auth, "account");
+    const st = await call("GET", "/api/auth/status");
+    assert.equal(st.body.legacy, true);
+    assert.equal(st.body.legacyNeedsPassword, true);
+  });
+
+  let ownerToken;
+  await test("accounts: sign up brings the old journal only with its password", async () => {
+    let res = await call("POST", "/api/auth/signup", { email: "Owner@Example.com", password: "new-password-1", legacyPassword: "wrong" });
+    assert.equal(res.status, 400);
+    res = await call("POST", "/api/auth/signup", { email: "Owner@Example.com", password: "new-password-1", legacyPassword: "old-password-1" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.broughtJournal, true);
+    ownerToken = res.body.token;
+    const st = await call("GET", "/api/state", null, ownerToken);
+    assert.equal(st.status, 200);
+    assert.equal(st.body.account.email, "owner@example.com");
+    assert.ok(st.body.setups.some(s => s.label === "old journal setup"));
+    assert.ok(!blobs.keys().includes("db.json"));
+    assert.equal((await call("GET", "/api/auth/status")).body.legacy, false);
+  });
+
+  await test("accounts: duplicate email, bad login, good login", async () => {
+    assert.equal((await call("POST", "/api/auth/signup", { email: "owner@example.com", password: "another-pass" })).status, 409);
+    assert.equal((await call("POST", "/api/auth/login", { email: "owner@example.com", password: "nope-nope" })).status, 401);
+    const res = await call("POST", "/api/auth/login", { email: " OWNER@example.com ", password: "new-password-1" });
+    assert.equal(res.status, 200);
+    assert.ok(res.body.token);
+  });
+
+  await test("accounts: each account sees only its own journal", async () => {
+    const res = await call("POST", "/api/auth/signup", { email: "friend@example.com", password: "friend-pass-1" });
+    assert.equal(res.status, 200);
+    const friend = res.body.token;
+    await call("POST", "/api/setups", { symbol: "USDJPY", direction: "long", entry: 150, label: "friend setup" }, friend);
+    const mine = await call("GET", "/api/state", null, ownerToken);
+    assert.ok(!mine.body.setups.some(s => s.label === "friend setup"));
+    const theirs = await call("GET", "/api/state", null, friend);
+    assert.ok(!theirs.body.setups.some(s => s.label === "old journal setup"));
+    assert.ok(theirs.body.setups.some(s => s.label === "friend setup"));
+  });
+
+  await test("accounts: password change signs out other devices", async () => {
+    const res = await call("POST", "/api/auth/password", { current: "new-password-1", password: "newer-password-2" }, ownerToken);
+    assert.equal(res.status, 200);
+    assert.equal((await call("GET", "/api/state", null, ownerToken)).status, 401);
+    ownerToken = res.body.token;
+    assert.equal((await call("GET", "/api/state", null, ownerToken)).status, 200);
+  });
+
+  await test("accounts: an edit made during a price check is not overwritten", async () => {
+    const token = (await call("POST", "/api/auth/login", { email: "friend@example.com", password: "friend-pass-1" })).body.token;
+    let friendKey = null;
+    for (const k of blobs.keys().filter(k => k.startsWith("accounts/db/"))) {
+      const d = await blobs.get(k);
+      if (d.setups.some(s => s.label === "friend setup")) friendKey = k;
+    }
+    // The poller loads, the user saves a setup, then the poller tries to save.
+    const poller = core.createDesk({ store: docStore(blobs, friendKey), realtime: false });
+    await poller.load();
+    await call("POST", "/api/setups", { symbol: "EURUSD", direction: "long", entry: 1.2, label: "added mid-poll" }, token);
+    let conflict = false;
+    try { await poller.save(true); } catch (err) { conflict = !!err.conflict; }
+    assert.equal(conflict, true);
+    const snap = poller.pollSnapshot();
+    await poller.load();
+    poller.mergePoll(snap);
+    await poller.save(true);
+    const st = await call("GET", "/api/state", null, token);
+    assert.ok(st.body.setups.some(s => s.label === "added mid-poll"));
+    assert.ok(st.body.setups.some(s => s.label === "friend setup"));
+  });
+
+  await test("accounts: scheduled check visits every journal", async () => {
+    const realFetch = global.fetch;
+    global.fetch = async () => { throw new Error("offline in tests"); };
+    try {
+      const result = await pollAll(null, { blobs, budgetMs: 5000 });
+      assert.equal(result.journals, 2);
+    } finally { global.fetch = realFetch; }
+  });
+
+  await test("accounts: closed sign-ups and account deletion", async () => {
+    const closed = createHandler({ accounts: true, blobs, signups: false });
+    const res = await closed({ httpMethod: "POST", path: "/api/auth/signup", headers: {}, body: JSON.stringify({ email: "x@example.com", password: "xxxxxxxx1" }) });
+    assert.equal(res.statusCode, 403);
+    const login = await call("POST", "/api/auth/login", { email: "friend@example.com", password: "friend-pass-1" });
+    assert.equal((await call("POST", "/api/auth/delete", { current: "wrong" }, login.body.token)).status, 400);
+    assert.equal((await call("POST", "/api/auth/delete", { current: "friend-pass-1" }, login.body.token)).status, 200);
+    assert.equal((await call("POST", "/api/auth/login", { email: "friend@example.com", password: "friend-pass-1" })).status, 401);
   });
 
   console.log("\n" + passed + " checks passed.\n");

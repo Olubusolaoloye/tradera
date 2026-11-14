@@ -62,22 +62,41 @@ In Netlify: **Add new site → Import an existing project**, pick the repo, then
 
 `netlify.toml` already declares those paths, so Netlify should detect them.
 
-### 3. Set environment variables
+### 3. Accounts and environment variables
 
-**Site configuration → Environment variables:**
+On Netlify, Tradera uses **email + password accounts**. Anyone who opens the site can
+create an account, and every account gets its own private journal, setups, alerts and
+settings. Logins last 30 days per device. There is no password reset by email, so keep
+your password safe (you can change it in **Settings → Account** while logged in).
 
-| Key | Required | Purpose |
-| --- | --- | --- |
-| `DESK_PASSCODE` | **Yes** | Shared passcode for the app. Without it the API is public. |
-| `DESK_STORE` | No | Netlify Blobs store name. Default `trading-desk` (kept from before the Tradera rename so existing sites keep their data). |
+**Site configuration → Environment variables** (all optional):
 
-Redeploy after adding the passcode. On first load the app shows a lock screen; enter the passcode to unlock that device. Settings has **Lock desk** to forget it.
+| Key | Purpose |
+| --- | --- |
+| `TRADERA_SIGNUPS` | `closed` stops new sign-ups; existing accounts keep working. |
+| `TRADERA_ACCOUNTS` | `off` goes back to the old single-user mode (one journal, app password or `DESK_PASSCODE`). |
+| `DESK_PASSCODE` | Single-user mode only: shared passcode and master key. |
+| `DESK_STORE` | Netlify Blobs store name. Default `trading-desk` (kept from before the Tradera rename so existing sites keep their data). |
+
+**Moving an existing journal into an account.** If the site already had a journal from
+before accounts, the sign-up screen asks for that journal's current password. Enter it
+and the journal, setups and alert settings move into the new account. This works once;
+a copy of the old data is kept at `backup/db-before-accounts.json` in the Blobs store.
 
 ### 4. Data storage
 
-Online data is stored in **Netlify Blobs** (free tier). Nothing needs provisioning — the
-function creates the `trading-desk` store on first save. Export a JSON backup from
-**Settings → Export JSON** before changing deployments.
+Online data is stored in **Netlify Blobs** (free tier), with strong consistency so a
+read right after a save always sees it. Nothing needs provisioning.
+
+| Key | Holds |
+| --- | --- |
+| `accounts/users/<hash>.json` | one per email: password hash (scrypt), sign-in version |
+| `accounts/db/<id>.json` | that account's journal, setups, alerts and settings |
+| `accounts/meta.json` | token signing secret |
+
+Every save is conditional on the version that was loaded, so a phone and a laptop (or
+the price checker and you) can never overwrite each other's changes. Export a JSON
+backup from **Settings** before changing deployments.
 
 ### 5. Scheduled price checks
 
@@ -88,8 +107,10 @@ function creates the `trading-desk` store on first save. Export a JSON backup fr
   schedule = "*/2 * * * *"
 ```
 
-That function fetches quotes, evaluates entry alerts and sends ntfy/Telegram push while
-nobody is on the site. Change it to `*/5 * * * *` to reduce free-tier usage. Scheduled
+That function fetches quotes, evaluates entry alerts and sends ntfy/Telegram push for
+every account while nobody is on the site. It checks four journals at a time and stops
+before the 30-second scheduled-function limit, which comfortably covers a few dozen
+accounts; beyond that, prices for the remaining accounts refresh when they open the app. Change it to `*/5 * * * *` to reduce free-tier usage. Scheduled
 functions are not exposed as HTTP endpoints.
 
 The browser falls back to polling `/api/state` every 60 seconds when realtime SSE is not

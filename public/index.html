@@ -24,8 +24,10 @@
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650;12..96,750&family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="/styles.css?v=2.5.0">
+<!-- Fonts load without blocking the first paint; a slow connection shows system fonts first. -->
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650;12..96,750&family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,650;12..96,750&family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"></noscript>
+<link rel="stylesheet" href="/styles.css?v=2.6.0">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
@@ -160,13 +162,26 @@
 <div class="gate" id="gate" hidden>
   <form class="gate-card" id="gateForm">
     <span class="brand-mark"><svg><use href="#mark"/></svg></span>
-    <h1>Welcome back to Tradera</h1>
+    <h1 id="gateTitle">Welcome back to Tradera</h1>
     <p id="gateText">Your journal is private. Enter your password to open it on this device.</p>
-    <label class="field"><span id="gateLabel">Password</span>
-      <input id="gateKey" type="password" inputmode="text" autocomplete="current-password" placeholder="Your password" required autofocus>
+    <label class="field" id="gateEmailField" hidden><span>Email</span>
+      <input id="gateEmail" type="email" inputmode="email" autocomplete="username" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="you@example.com">
     </label>
-    <button class="btn primary" type="submit">Log in</button>
+    <label class="field"><span id="gateLabel">Password</span>
+      <input id="gateKey" type="password" autocomplete="current-password" placeholder="Your password" required>
+    </label>
+    <label class="field" id="gateRepeatField" hidden><span>Repeat password</span>
+      <input id="gateRepeat" type="password" autocomplete="new-password" placeholder="Same password again">
+    </label>
+    <div class="gate-legacy" id="gateLegacy" hidden>
+      <strong>Already using Tradera on this site?</strong>
+      <p id="gateLegacyText">Enter the password you use today and your journal, setups and alert settings move into this new account. Leave it empty to start fresh.</p>
+      <input id="gateLegacyPw" type="password" autocomplete="off" placeholder="Your current Tradera password">
+      <label class="check-line" id="gateLegacyCheckLine" hidden><input type="checkbox" id="gateLegacyCheck"> Bring the journal that is already on this site</label>
+    </div>
+    <button class="btn primary" type="submit" id="gateSubmit">Log in</button>
     <div class="form-error" id="gateError" hidden></div>
+    <p class="gate-switch" id="gateSwitch" hidden></p>
     <p class="gate-note" id="gateNote">You'll stay logged in on this device for 30 days.</p>
   </form>
 </div>
@@ -186,6 +201,6 @@
 </dialog>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
-<script src="/app.js?v=2.5.0"></script>
+<script src="/app.js?v=2.6.0"></script>
 </body>
 </html>

@@ -266,10 +266,29 @@ function authHeaders() {
   const key = deskKey();
   return key ? { "x-desk-key": key } : {};
 }
-/** mode "password": the app password from Settings. "passcode": Netlify's DESK_PASSCODE. */
-function showGate(mode) {
+/**
+ * mode "account": email + password accounts (Netlify). "password": the local
+ * app password from Settings. "passcode": Netlify's single-user DESK_PASSCODE.
+ */
+async function showGate(mode) {
   const gate = document.getElementById("gate");
   if (!gate) return;
+  if (mode === "account") {
+    ui.authMode = "account";
+    try {
+      const res = await fetch("/api/auth/status", { cache: "no-store" });
+      ui.authInfo = await res.json();
+    } catch (_) {
+      ui.authInfo = ui.authInfo || { signups: true };
+    }
+    const info = ui.authInfo || {};
+    setGateStep(store("email") || info.signups === false ? "login" : info.legacy ? "signup" : "login");
+    gate.hidden = false;
+    return;
+  }
+  ["gateEmailField", "gateRepeatField", "gateLegacy", "gateSwitch"].forEach(id => { document.getElementById(id).hidden = true; });
+  document.getElementById("gateTitle").textContent = "Welcome back to Tradera";
+  document.getElementById("gateSubmit").textContent = "Log in";
   ui.authMode = mode === "passcode" ? "passcode" : "password";
   const passcode = ui.authMode === "passcode";
   document.getElementById("gateText").textContent = passcode
@@ -288,11 +307,51 @@ function showGate(mode) {
   }
 }
 
+/** Switch the account gate between "login" and "signup". */
+function setGateStep(step) {
+  const info = ui.authInfo || {};
+  const signup = step === "signup" && info.signups !== false;
+  ui.gateStep = signup ? "signup" : "login";
+  const $ = id => document.getElementById(id);
+  $("gateTitle").textContent = signup ? "Create your Tradera account" : "Welcome back to Tradera";
+  $("gateText").textContent = signup
+    ? "Your journal, setups and alert settings are saved to your account. Log in with the same email on any device."
+    : "Log in with your email and password.";
+  $("gateEmailField").hidden = false;
+  $("gateLabel").textContent = signup ? "Choose a password" : "Password";
+  const key = $("gateKey");
+  key.value = "";
+  key.placeholder = signup ? "At least 8 characters" : "Your password";
+  key.autocomplete = signup ? "new-password" : "current-password";
+  $("gateRepeatField").hidden = !signup;
+  $("gateRepeat").value = "";
+  const legacy = signup && info.legacy;
+  $("gateLegacy").hidden = !legacy;
+  $("gateLegacyPw").hidden = !info.legacyNeedsPassword;
+  $("gateLegacyCheckLine").hidden = !!info.legacyNeedsPassword;
+  $("gateLegacyText").textContent = info.legacyNeedsPassword
+    ? "Enter the password you use today and your journal, setups and alert settings move into this new account. Leave it empty to start fresh."
+    : "Tick the box to move the journal that is already on this site into your new account.";
+  $("gateSubmit").textContent = signup ? "Create account" : "Log in";
+  $("gateSwitch").hidden = info.signups === false && !signup;
+  $("gateSwitch").innerHTML = signup
+    ? 'Already have an account? <button type="button" class="link-btn" data-gate="login">Log in</button>'
+    : 'New to Tradera? <button type="button" class="link-btn" data-gate="signup">Create an account</button>';
+  $("gateNote").textContent = signup
+    ? "There is no password reset by email, so keep your password somewhere safe."
+    : "You'll stay logged in on this device for 30 days.";
+  $("gateError").hidden = true;
+  const email = $("gateEmail");
+  if (!email.value) email.value = store("email") || "";
+}
+
 function signOutLocally() {
   store("key", null);
+  store("lastState", null);
   if (eventSource) { eventSource.close(); eventSource = null; }
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   state = null;
+  if (viewEl) viewEl.innerHTML = "";
 }
 function hideGate() {
   const gate = document.getElementById("gate");
@@ -320,6 +379,22 @@ function patch(path, body) {
   return api(path, { method: "PATCH", body: JSON.stringify(body || {}) });
 }
 
+/** Keep the last good state on this device so the app opens instantly next time. */
+let lastCacheAt = 0;
+function cacheState(force) {
+  if (!state || (!force && Date.now() - lastCacheAt < 15000)) return;
+  lastCacheAt = Date.now();
+  try { localStorage.setItem("tradera:lastState", JSON.stringify(state)); } catch (_) { /* full or private mode */ }
+}
+function cachedState() {
+  try {
+    const raw = localStorage.getItem("tradera:lastState");
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 function seedAlerts(list) {
   (list || []).forEach(function (a) { if (a && a.id) seenAlerts.add(a.id); });
 }
@@ -336,6 +411,7 @@ function applyState(next, options) {
   renderView();
   if (!options || !options.silent) updateLiveNodes();
   fresh.slice().reverse().forEach(showAlert);
+  cacheState(true);
 }
 
 /** Merge a polled state without disturbing an open form or focused input. */
@@ -347,7 +423,9 @@ function absorbState(next) {
   const tag = document.activeElement && document.activeElement.tagName;
   const typing = (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") &&
     document.activeElement.closest("#view");
-  if (modal.open || typing) {
+  // A background refresh must never wipe what someone has typed but not saved:
+  // on phones the keyboard closes (and focus leaves) long before Save is tapped.
+  if (modal.open || typing || ui.viewDirty || ui.view === "settings") {
     updateLiveNodes();
     renderChrome();
   } else {
@@ -355,6 +433,7 @@ function absorbState(next) {
     renderView();
   }
   fresh.slice().reverse().forEach(showAlert);
+  cacheState();
 }
 
 async function pollState() {
@@ -467,6 +546,7 @@ function renderChrome() {
 
 function renderView() {
   if (!state) return;
+  ui.viewDirty = false;
   if (ui.view === "dashboard") viewEl.innerHTML = renderDashboard();
   else if (ui.view === "journal") viewEl.innerHTML = renderJournal();
   else if (ui.view === "setups") viewEl.innerHTML = renderSetups();
@@ -995,6 +1075,21 @@ function settingsSection(title, text, body) {
 }
 
 function securitySection() {
+  if (state.accounts) {
+    return settingsSection("Account", "Signed in as <b>" + esc((state.account && state.account.email) || "") + "</b>. Use this email and password to log in on any device. Logins last 30 days.",
+      '<div class="form-grid">' +
+        '<label class="field full"><span>Current password</span><input id="pwCurrent" type="password" autocomplete="current-password"></label>' +
+        '<label class="field"><span>New password <em>8+ characters</em></span><input id="pwNew" type="password" autocomplete="new-password"></label>' +
+        '<label class="field"><span>Repeat new password</span><input id="pwRepeat" type="password" autocomplete="new-password"></label>' +
+      "</div>" +
+      '<div class="toolbar" style="margin:12px 0 0">' +
+        '<button class="btn ghost small" type="button" data-action="set-password">Change password</button>' +
+        '<button class="btn ghost small" type="button" data-action="lock-desk">Log out</button>' +
+        '<button class="btn ghost small" type="button" data-action="logout-all">Log out other devices</button>' +
+        '<button class="btn danger small" type="button" data-action="delete-account">Delete account</button>' +
+      "</div>" +
+      '<div class="field-note" style="margin-top:8px">Changing your password, or logging out other devices, signs out every other phone and browser. Deleting your account needs your current password and removes your journal for good.</div>');
+  }
   if (!state.passwordSet) {
     return settingsSection("Password", "Anyone who can open Tradera can see your journal. Set a password to require a login on every device.",
       '<div class="form-grid">' +
@@ -1930,8 +2025,20 @@ document.addEventListener("click", async function (e) {
     if (action === "chart") return openChart(symbol);
     if (action === "export-json") return exportJSON();
     if (action === "lock-desk") {
+      const accounts = !!(state && state.accounts);
       signOutLocally();
-      showGate("password");
+      showGate(accounts ? "account" : "password");
+      return;
+    }
+    if (action === "delete-account") {
+      const current = (document.getElementById("pwCurrent") || {}).value || "";
+      if (!current) return toast("Enter your current password", "Type it in Current password, then press Delete account.", "error");
+      if (!(await confirmDialog("Delete your account?", "Your journal, setups, alerts and settings will be deleted for good. Download a backup first if you might want them.", "Delete account"))) return;
+      await post("/api/auth/delete", { current });
+      signOutLocally();
+      store("email", null);
+      showGate("account");
+      toast("Account deleted", "Your journal has been removed.");
       return;
     }
     if (action === "set-password") {
@@ -2216,10 +2323,22 @@ async function boot() {
   startClock();
   const hash = location.hash.slice(1);
   if (VIEW_META[hash]) ui.view = hash;
+  // Show the last known journal straight away while the server answers.
+  const cached = cachedState();
+  if (cached && cached.settings) {
+    state = cached;
+    renderChrome();
+    renderView();
+  }
   try {
     state = await api("/api/state");
   } catch (err) {
     if (!document.getElementById("gate").hidden) return;
+    if (cached && cached.settings) {
+      startApp(cached);
+      setFeedError("Offline — retrying");
+      return;
+    }
     viewEl.innerHTML = '<div class="panel"><div class="panel-body">' +
       '<div class="form-error">Tradera could not reach its server. Running locally? Start it with <b>node server.js</b> (or double-click <b>start.cmd</b>). On Netlify, check that functions deployed and <b>DESK_PASSCODE</b> is set, then reload.</div>' +
       "</div></div>";
@@ -2232,6 +2351,8 @@ async function boot() {
 function startApp(next) {
   hideGate();
   state = next;
+  cacheState(true);
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   seedAlerts(state.alerts);
   updateNotifyButton();
   renderChrome();
@@ -2249,6 +2370,46 @@ if (gateForm) {
     const key = String(input.value || "").trim();
     if (!key) return;
     error.hidden = true;
+    const fail = function (message) {
+      error.textContent = message;
+      error.hidden = false;
+    };
+    if (ui.authMode === "account") {
+      const signup = ui.gateStep === "signup";
+      const email = String(document.getElementById("gateEmail").value || "").trim();
+      const password = String(input.value || "");
+      if (!email) return fail("Enter your email address.");
+      if (signup && password.length < 8) return fail("Use at least 8 characters for your password.");
+      if (signup && password !== document.getElementById("gateRepeat").value) return fail("The two passwords don't match.");
+      const payload = { email, password };
+      if (signup && ui.authInfo && ui.authInfo.legacy) {
+        const old = document.getElementById("gateLegacyPw").value;
+        if (ui.authInfo.legacyNeedsPassword && old) payload.legacyPassword = old;
+        if (!ui.authInfo.legacyNeedsPassword && document.getElementById("gateLegacyCheck").checked) payload.claimLegacy = true;
+      }
+      const button = document.getElementById("gateSubmit");
+      button.disabled = true;
+      try {
+        const res = await fetch(signup ? "/api/auth/signup" : "/api/auth/login", {
+          method: "POST", headers: { "Content-Type": "application/json" }, cache: "no-store",
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.token) return fail(data.error || "Could not " + (signup ? "create your account" : "log in") + " (" + res.status + ")");
+        store("key", data.token);
+        store("email", data.email || email);
+        const st = await fetch("/api/state", { headers: { "x-desk-key": data.token }, cache: "no-store" });
+        if (!st.ok) throw new Error("Server error (" + st.status + ")");
+        startApp(await st.json());
+        if (signup) toast("Account created", data.broughtJournal ? "Your journal, setups and settings moved into your account." : "Welcome to Tradera. Add your markets to get started.");
+        else toast("Logged in", "Welcome back to Tradera.");
+      } catch (err) {
+        fail(err.message);
+      } finally {
+        button.disabled = false;
+      }
+      return;
+    }
     try {
       let token = key;
       if (ui.authMode !== "passcode") {
@@ -2281,6 +2442,15 @@ if (gateForm) {
     }
   });
 }
+
+document.getElementById("gate").addEventListener("click", function (e) {
+  const btn = e.target.closest("[data-gate]");
+  if (btn) setGateStep(btn.dataset.gate);
+});
+/* Any typing inside the page marks it as having unsaved changes (see absorbState). */
+document.addEventListener("input", function (e) {
+  if (e.target.closest && e.target.closest("#view")) ui.viewDirty = true;
+}, true);
 
 document.addEventListener("visibilitychange", function () {
   if (!document.hidden && state && state.realtime === false) pollState();
