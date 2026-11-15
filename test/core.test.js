@@ -117,6 +117,48 @@ async function test(name, fn) {
     assert.equal(res.body.setups.find(s => s.id === id).status, "watching");
   });
 
+  await test("trade screenshots and review: save, keep on quick edits, clean up", async () => {
+    const images = core.createMemoryImages();
+    const d = core.createDesk({ store: createMemoryStore(null), realtime: false, images });
+    await d.load();
+    const png = "data:image/png;base64," + Buffer.from("fake-png-bytes").toString("base64");
+    const a = (await d.handle("POST", "/api/images", { data: png })).body.id;
+    const b = (await d.handle("POST", "/api/images", { data: png })).body.id;
+    assert.equal(images.size(), 2);
+    assert.equal((await d.handle("POST", "/api/images", { data: "data:text/html;base64,PGI+" })).status, 400);
+
+    let res = await d.handle("POST", "/api/trades", {
+      symbol: "EURUSD", direction: "long", entry: 1.1, status: "open",
+      images: JSON.stringify([{ id: a, caption: "Entry" }, { id: b }]),
+      verdict: "worked", followedPlan: "yes", why: "Waited for the retest", lesson: "Be patient"
+    });
+    const t = res.body.trades.find(x => x.why === "Waited for the retest");
+    assert.equal(t.images.length, 2);
+    assert.equal(t.images[0].caption, "Entry");
+    assert.equal(t.verdict, "worked");
+    assert.equal(t.followedPlan, "yes");
+
+    const file = await d.handle("GET", "/api/images/" + a);
+    assert.equal(file.file.contentType, "image/png");
+    assert.equal(file.file.data.toString(), "fake-png-bytes");
+
+    // A save that does not send screenshots or the review keeps them.
+    res = await d.handle("POST", "/api/trades", { id: t.id, symbol: "EURUSD", direction: "long", entry: 1.1, status: "open", notes: "edited" });
+    let kept = res.body.trades.find(x => x.id === t.id);
+    assert.equal(kept.images.length, 2);
+    assert.equal(kept.verdict, "worked");
+
+    // Closing with one screenshot removed deletes that file.
+    res = await d.handle("POST", "/api/trades/" + t.id + "/close", { exit: 1.12, images: [{ id: a }], verdict: "mixed" });
+    kept = res.body.trades.find(x => x.id === t.id);
+    assert.equal(kept.images.length, 1);
+    assert.equal(kept.verdict, "mixed");
+    assert.equal(images.size(), 1);
+
+    await d.handle("DELETE", "/api/trades/" + t.id);
+    assert.equal(images.size(), 0);
+  });
+
   await test("bulk add skips duplicates", async () => {
     const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
     await d.load();
@@ -436,6 +478,22 @@ async function test(name, fn) {
       const result = await pollAll(null, { blobs, budgetMs: 5000 });
       assert.equal(result.journals, 2);
     } finally { global.fetch = realFetch; }
+  });
+
+  await test("accounts: screenshots are private to each account", async () => {
+    const tok = (await call("POST", "/api/auth/login", { email: "owner@example.com", password: "newer-password-2" })).body.token;
+    const png = "data:image/png;base64," + Buffer.from("owner-shot").toString("base64");
+    const up = await call("POST", "/api/images", { data: png }, tok);
+    assert.equal(up.status, 200);
+    const raw = await acc({ httpMethod: "GET", path: "/api/images/" + up.body.id, headers: {}, queryStringParameters: { key: tok } });
+    assert.equal(raw.statusCode, 200);
+    assert.equal(raw.isBase64Encoded, true);
+    assert.equal(Buffer.from(raw.body, "base64").toString(), "owner-shot");
+    const signup = await call("POST", "/api/auth/signup", { email: "other@example.com", password: "other-pass-1" });
+    const other = await acc({ httpMethod: "GET", path: "/api/images/" + up.body.id, headers: { "x-desk-key": signup.body.token } });
+    assert.equal(other.statusCode, 404);
+    const anon = await acc({ httpMethod: "GET", path: "/api/images/" + up.body.id, headers: {} });
+    assert.equal(anon.statusCode, 401);
   });
 
   await test("accounts: closed sign-ups and account deletion", async () => {

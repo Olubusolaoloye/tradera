@@ -22,6 +22,7 @@ const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
+const IMAGE_DIR = path.join(DATA_DIR, "images");
 const OPEN_BROWSER = process.env.NO_OPEN !== "1";
 
 // ------------------------------------------------------------------- storage
@@ -54,6 +55,28 @@ const fileStore = {
   }
 };
 
+/** Trade screenshots live next to the journal as plain files. */
+const IMAGE_EXT = { "image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/gif": ".gif" };
+const fileImages = {
+  async put(id, data, contentType) {
+    await fs.promises.mkdir(IMAGE_DIR, { recursive: true });
+    await fs.promises.writeFile(path.join(IMAGE_DIR, id + (IMAGE_EXT[contentType] || ".jpg")), data);
+  },
+  async get(id) {
+    for (const [type, ext] of Object.entries(IMAGE_EXT)) {
+      try {
+        return { data: await fs.promises.readFile(path.join(IMAGE_DIR, id + ext)), contentType: type };
+      } catch (_) { /* try the next extension */ }
+    }
+    return null;
+  },
+  async remove(id) {
+    for (const ext of Object.values(IMAGE_EXT)) {
+      try { await fs.promises.unlink(path.join(IMAGE_DIR, id + ext)); } catch (_) { /* not this one */ }
+    }
+  }
+};
+
 // ------------------------------------------------------------------ realtime
 
 const sseClients = new Set();
@@ -73,6 +96,7 @@ function broadcast(event, data) {
 
 const desk = createDesk({
   store: fileStore,
+  images: fileImages,
   realtime: true,
   onAlert(alert) {
     broadcast("alert", alert);
@@ -125,7 +149,7 @@ async function readBody(req) {
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 2 * 1024 * 1024) throw new Error("Request body too large");
+    if (size > 8 * 1024 * 1024) throw new Error("Request body too large");
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
@@ -236,6 +260,15 @@ const server = http.createServer(async (req, res) => {
     }
 
     const result = await desk.handle(method, pathname, body);
+
+    if (result.file) {
+      res.writeHead(result.status || 200, {
+        "Content-Type": result.file.contentType,
+        "Content-Length": result.file.data.length,
+        "Cache-Control": "private, max-age=31536000, immutable"
+      });
+      return res.end(result.file.data);
+    }
 
     if (result.export) {
       // Persist any in-memory quote/alert changes before exporting.

@@ -56,7 +56,8 @@ const ICONS = {
   external: '<path d="M14 4h6v6M20 4l-9 9M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   check: '<path d="m5 13 4 4L19 7"/>',
-  bell: '<path d="M18 9a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7M10.5 20a2 2 0 0 0 3 0"/>'
+  bell: '<path d="M18 9a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7M10.5 20a2 2 0 0 0 3 0"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z"/><circle cx="12" cy="13.5" r="3.5"/>'
 };
 
 function icon(name) {
@@ -876,9 +877,11 @@ function journalTableHtml() {
         '<td data-label="Pips" class="num mono">' + (open || t.pips === null ? "—" : (t.pips > 0 ? "+" : "") + fmtNum(t.pips, 1)) + "</td>" +
         '<td data-label="R" class="num mono">' + (open || t.r === null ? "—" : (t.r > 0 ? "+" : "") + fmtNum(t.r, 2) + "R") + "</td>" +
         '<td data-label="Net P&L" class="num mono ' + pnlClass(t.netPnl) + '">' + (open ? "—" : fmtSignedMoney(t.netPnl)) + "</td>" +
-        '<td data-label="Status">' + (open ? '<span class="pill open">Open</span>'
+        '<td data-label="Status"><div class="status-cell">' + (open ? '<span class="pill open">Open</span>'
           : t.netPnl > 0 ? '<span class="pill triggered">Win</span>' : t.netPnl < 0 ? '<span class="pill invalidated">Loss</span>'
-          : '<span class="pill closed">Flat</span>') + "</td>" +
+          : '<span class="pill closed">Flat</span>') + verdictTag(t) +
+          (t.images && t.images.length ? '<span class="shot-count" title="' + plural(t.images.length, "screenshot") + '">' + icon("camera") + t.images.length + "</span>" : "") +
+          "</div></td>" +
         '<td data-label="">' + '<div class="row-actions">' +
           (open ? '<button class="btn small" data-action="close-trade" data-id="' + esc(t.id) + '">Close</button>' : "") +
           '<button class="icon-btn" title="Edit" data-action="edit-trade" data-id="' + esc(t.id) + '">' + icon("edit") + "</button>" +
@@ -891,9 +894,14 @@ function journalFoot(rows) {
   const closed = rows.filter(t => t.status === "closed");
   const net = closed.reduce((sum, t) => sum + (Number(t.netPnl) || 0), 0);
   const wins = closed.filter(t => Number(t.netPnl) > 0).length;
+  const planned = rows.filter(t => t.followedPlan === "yes" || t.followedPlan === "no");
+  const followed = planned.filter(t => t.followedPlan === "yes").length;
+  const unreviewed = closed.filter(t => !t.verdict).length;
   return '<div class="journal-foot"><span>Showing <b>' + plural(rows.length, "trade") + "</b></span>" +
     (closed.length ? '<span>Net <b class="' + pnlClass(net) + '">' + fmtSignedMoney(net) + "</b></span>" +
-      "<span>Won <b>" + wins + " of " + closed.length + "</b></span>" : "") + "</div>";
+      "<span>Won <b>" + wins + " of " + closed.length + "</b></span>" : "") +
+    (planned.length ? "<span>Followed plan <b>" + followed + " of " + planned.length + "</b></span>" : "") +
+    (unreviewed ? '<span class="faint">' + plural(unreviewed, "closed trade") + " not reviewed yet</span>" : "") + "</div>";
 }
 
 /* ------------------------------------------------------------------ setups */
@@ -1574,7 +1582,9 @@ function openTradeForm(trade, presetSetup) {
         '<label class="field wide-sm"><span>Closed <em>if closed</em></span><input name="closedAt" type="datetime-local" value="' + esc(t.closedAt ? toLocalInput(t.closedAt) : "") + '"></label>' +
         '<label class="field wide-sm"><span>Tags <em>comma separated</em></span><input name="tags" value="' + esc(t.tags || "") + '" placeholder="breakout, london"></label>' +
       "</div>" +
-      '<label class="field" style="margin-top:12px"><span>Notes</span><textarea name="notes" placeholder="Why you took it, how you managed it, what you would change">' + esc(t.notes || "") + "</textarea></label>" +
+      '<label class="field" style="margin-top:12px"><span>Notes</span><textarea name="notes" placeholder="Why you took it and how you managed it">' + esc(t.notes || "") + "</textarea></label>" +
+      shotsField() +
+      reviewFields(t) +
       '<div class="preview-box" id="tradePreview"></div>' +
       formError() +
       '<div class="form-actions"><button class="btn" type="button" data-close>Cancel</button>' +
@@ -1583,6 +1593,7 @@ function openTradeForm(trade, presetSetup) {
   );
 
   const form = document.getElementById("tradeForm");
+  const shots = attachShots(form, t.images);
   const statusSelect = document.getElementById("tradeStatus");
   const update = function () {
     const v = k => {
@@ -1623,7 +1634,13 @@ function openTradeForm(trade, presetSetup) {
     e.preventDefault();
     const err = document.getElementById("formError");
     err.hidden = true;
+    if (shots.busy()) {
+      err.textContent = "Wait for your screenshots to finish uploading.";
+      err.hidden = false;
+      return;
+    }
     const data = Object.fromEntries(new FormData(form).entries());
+    data.images = shots.get();
     if (data.symbol) data.symbol = String(data.symbol).toUpperCase().replace(/\s+/g, "");
     if (data.status === "closed" && !data.closedAt) data.closedAt = new Date().toISOString();
     try {
@@ -1650,6 +1667,8 @@ function openCloseForm(trade) {
         '<label class="field"><span>Fees</span><input name="fees" type="number" step="any" value="' + esc(trade.fees || "") + '"></label>' +
       "</div>" +
       '<label class="field" style="margin-top:12px"><span>Closing notes</span><textarea name="notes">' + esc(trade.notes || "") + "</textarea></label>" +
+      shotsField() +
+      reviewFields(trade) +
       '<div class="preview-box" id="closePreview"></div>' +
       formError() +
       '<div class="form-actions"><button class="btn" type="button" data-close>Cancel</button>' +
@@ -1657,6 +1676,7 @@ function openCloseForm(trade) {
     "</form>"
   );
   const form = document.getElementById("closeForm");
+  const shots = attachShots(form, trade.images);
   const update = function () {
     const exitRaw = form.elements.exit.value;
     const exit = exitRaw === "" ? NaN : Number(exitRaw);
@@ -1682,7 +1702,13 @@ function openCloseForm(trade) {
     e.preventDefault();
     const err = document.getElementById("formError");
     err.hidden = true;
+    if (shots.busy()) {
+      err.textContent = "Wait for your screenshots to finish uploading.";
+      err.hidden = false;
+      return;
+    }
     const data = Object.fromEntries(new FormData(form).entries());
+    data.images = shots.get();
     try {
       const next = await post("/api/trades/" + encodeURIComponent(trade.id) + "/close", data);
       closeModal();
@@ -1694,6 +1720,161 @@ function openCloseForm(trade) {
     }
   });
 }
+
+/* ----------------------------------------------------- screenshots + review */
+
+const VERDICTS = { worked: "Worked", failed: "Didn't work", mixed: "Mixed" };
+
+function verdictTag(t) {
+  return t.verdict && VERDICTS[t.verdict] ? '<span class="verdict-tag v-' + t.verdict + '">' + VERDICTS[t.verdict] + "</span>" : "";
+}
+
+/** Address of a stored screenshot; the login token rides along because <img> cannot send headers. */
+function imageUrl(id) {
+  const key = deskKey();
+  return "/api/images/" + encodeURIComponent(id) + (key ? "?key=" + encodeURIComponent(key) : "");
+}
+
+function shotsField() {
+  return '<div class="form-block shots">' +
+    '<div class="form-block-head"><h3>Screenshots</h3><p>Your chart at entry and at the exit. Add up to 8' +
+      (matchMedia("(pointer: fine)").matches ? ", or paste one with Ctrl+V." : ".") + "</p></div>" +
+    '<div class="shot-list"></div>' +
+    '<label class="shot-add">' + icon("camera") + "<span>Add screenshot</span>" +
+      '<input type="file" accept="image/*" multiple aria-label="Add screenshots"></label>' +
+  "</div>";
+}
+
+function reviewFields(t) {
+  const radio = function (name, value, label, current) {
+    return '<label class="' + name + "-" + value + '"><input type="radio" name="' + name + '" value="' + value + '"' +
+      (current === value ? " checked" : "") + "><span>" + label + "</span></label>";
+  };
+  return '<div class="form-block">' +
+    '<div class="form-block-head"><h3>Review</h3><p>Write it while it is fresh. This is what turns the journal into better trades.</p></div>' +
+    '<div class="form-grid">' +
+      '<div class="field"><span class="field-label">How did it go?</span><div class="segmented review-seg" role="radiogroup" aria-label="How did it go">' +
+        radio("verdict", "worked", "Worked", t.verdict) + radio("verdict", "failed", "Didn't work", t.verdict) + radio("verdict", "mixed", "Mixed", t.verdict) +
+      "</div></div>" +
+      '<div class="field"><span class="field-label">Did you follow your plan?</span><div class="segmented review-seg" role="radiogroup" aria-label="Did you follow your plan">' +
+        radio("followedPlan", "yes", "Yes", t.followedPlan) + radio("followedPlan", "no", "No", t.followedPlan) +
+      "</div></div>" +
+    "</div>" +
+    '<label class="field" style="margin-top:12px"><span>Why it worked, or why it didn\'t</span><textarea name="why" placeholder="e.g. Waited for the London sweep and the retest held. Or: entered before confirmation and got stopped by the spike.">' + esc(t.why || "") + "</textarea></label>" +
+    '<label class="field" style="margin-top:12px"><span>Lesson for next time</span><textarea name="lesson" rows="2" placeholder="One thing to repeat or avoid">' + esc(t.lesson || "") + "</textarea></label>" +
+  "</div>";
+}
+
+/** Shrink a photo or screenshot in the browser before upload (max 1800px, JPEG). */
+function compressImage(file) {
+  return new Promise(function (resolve, reject) {
+    if (!file || !/^image\//.test(file.type || "image/")) return reject(new Error("That file is not an image."));
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = function () {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, 1800 / Math.max(img.naturalWidth, img.naturalHeight));
+      const w = Math.max(1, Math.round(img.naturalWidth * scale));
+      const h = Math.max(1, Math.round(img.naturalHeight * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, w, h);
+      ctx.drawImage(img, 0, 0, w, h);
+      let quality = 0.86;
+      let out = canvas.toDataURL("image/jpeg", quality);
+      while (out.length > 3.5e6 && quality > 0.4) {
+        quality -= 0.15;
+        out = canvas.toDataURL("image/jpeg", quality);
+      }
+      resolve(out);
+    };
+    img.onerror = function () {
+      URL.revokeObjectURL(url);
+      reject(new Error("Could not read that image. Try a JPG or PNG screenshot."));
+    };
+    img.src = url;
+  });
+}
+
+/** Wire the screenshot picker inside a form; returns the current list. */
+function attachShots(form, initial) {
+  const box = form.querySelector(".shots");
+  const list = box.querySelector(".shot-list");
+  const add = box.querySelector(".shot-add");
+  const shots = (initial || []).map(s => ({ id: s.id, caption: s.caption || "" }));
+  let pending = 0;
+
+  const render = function () {
+    list.innerHTML = shots.map(function (s, i) {
+      return '<figure class="shot">' +
+        '<button type="button" class="shot-img" data-shot-view="' + i + '" aria-label="View screenshot"><img src="' + imageUrl(s.id) + '" alt="" loading="lazy"></button>' +
+        '<input class="shot-cap" data-shot-cap="' + i + '" value="' + esc(s.caption) + '" placeholder="Caption, e.g. Entry 15m" maxlength="120" aria-label="Screenshot caption">' +
+        '<button type="button" class="shot-del" data-shot-del="' + i + '" aria-label="Remove screenshot">' + icon("close") + "</button>" +
+      "</figure>";
+    }).join("") + Array.from({ length: pending }, () => '<div class="shot shot-loading"><span>Uploading…</span></div>').join("");
+    add.hidden = shots.length + pending >= 8;
+  };
+
+  const addFiles = async function (files) {
+    const room = Math.max(0, 8 - shots.length - pending);
+    const picked = Array.from(files || []).filter(f => /^image\//.test(f.type || "")).slice(0, room);
+    if (!picked.length && files && files.length) toast("Not an image", "Choose a JPG, PNG or screenshot.", "error");
+    await Promise.all(picked.map(async function (file) {
+      pending++;
+      render();
+      try {
+        const data = await compressImage(file);
+        const res = await post("/api/images", { data });
+        shots.push({ id: res.id, caption: "" });
+      } catch (err) {
+        toast("Could not add screenshot", err.message, "error");
+      } finally {
+        pending--;
+        render();
+      }
+    }));
+  };
+
+  box.addEventListener("change", function (e) {
+    if (e.target.type === "file") {
+      addFiles(e.target.files);
+      e.target.value = "";
+    }
+  });
+  box.addEventListener("input", function (e) {
+    const i = e.target.dataset && e.target.dataset.shotCap;
+    if (i !== undefined && shots[i]) shots[i].caption = e.target.value;
+  });
+  box.addEventListener("click", function (e) {
+    const del = e.target.closest("[data-shot-del]");
+    if (del) { shots.splice(Number(del.dataset.shotDel), 1); render(); return; }
+    const view = e.target.closest("[data-shot-view]");
+    if (view) { const s = shots[Number(view.dataset.shotView)]; if (s) openLightbox(s.id, s.caption); }
+  });
+  form.addEventListener("paste", function (e) {
+    const files = Array.from((e.clipboardData && e.clipboardData.files) || []).filter(f => /^image\//.test(f.type));
+    if (files.length) { e.preventDefault(); addFiles(files); }
+  });
+  render();
+  return { get: () => shots.slice(), busy: () => pending > 0 };
+}
+
+function openLightbox(id, caption) {
+  const box = document.getElementById("lightbox");
+  document.getElementById("lightboxImg").src = imageUrl(id);
+  const cap = document.getElementById("lightboxCap");
+  cap.textContent = caption || "";
+  cap.hidden = !caption;
+  if (!box.open) box.showModal();
+}
+document.getElementById("lightbox").addEventListener("click", function () {
+  const box = document.getElementById("lightbox");
+  box.close();
+  document.getElementById("lightboxImg").removeAttribute("src");
+});
 
 /* --------------------------------------------------------------- setup form */
 

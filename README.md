@@ -244,6 +244,12 @@ in-memory store, so you can test the passcode lock screen and polling mode witho
   closing to derive it; type a value to override.
 - Pips vs points: FX and metals use pips; crypto and indices use points (`pts`).
 - Only setups with status **Watching** are alerted.
+- Trade screenshots are shrunk in the browser (max 1800px JPEG, up to 8 per trade) and
+  stored outside the journal: `data/images/` locally, and per account in Netlify Blobs
+  online. JSON backups do not include them. Removing a screenshot or deleting a trade
+  deletes its files.
+- Each trade has a review: whether it worked, whether you followed your plan, why, and
+  the lesson. The journal footer counts how often you followed your plan.
 - Keep the local bind address at `127.0.0.1` unless you add authentication.
 
 ## Upgrading from Trading Desk
