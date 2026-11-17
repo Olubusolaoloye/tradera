@@ -159,6 +159,54 @@ async function test(name, fn) {
     assert.equal(images.size(), 0);
   });
 
+  await test("chart reminders fire once per slot, only on chosen days", async () => {
+    const sent = [];
+    const realFetch = global.fetch;
+    global.fetch = async (url, init) => { sent.push({ url: String(url), init }); return new Response("ok"); };
+    try {
+      const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
+      await d.load();
+      await d.handle("POST", "/api/settings", { ntfyTopic: "tradera-test" });
+      let res = await d.handle("POST", "/api/reminders", { enabled: true, everyMinutes: 120, from: "08:00", to: "20:00", days: [1, 2, 3, 4, 5], tz: "Africa/Lagos" });
+      assert.equal(res.status, 200);
+      assert.ok(res.body.nextReminderAt);
+      // Tuesday 17 Nov 2026, 14:05 in Lagos (13:05 UTC): the 14:00 check is due.
+      assert.equal(await d.checkReminders(new Date("2026-11-17T13:05:00Z")), true);
+      assert.equal(await d.checkReminders(new Date("2026-11-17T13:07:00Z")), false);
+      // 14:50 is between checks; too late for 14:00, before 16:00.
+      assert.equal(await d.checkReminders(new Date("2026-11-17T13:50:00Z")), false);
+      // Saturday is not a chosen day.
+      assert.equal(await d.checkReminders(new Date("2026-11-21T13:05:00Z")), false);
+      const pushes = sent.filter(x => x.url.includes("tradera-test"));
+      assert.equal(pushes.length, 1);
+      assert.equal(pushes[0].init.headers.Title, "Time to check your charts");
+      assert.equal(d.state().alerts[0].kind, "reminder");
+      res = await d.handle("POST", "/api/reminders", { from: "20:00", to: "08:00" });
+      assert.equal(res.status, 400);
+    } finally { global.fetch = realFetch; }
+  });
+
+  await test("iPhone feeds: calendar and Shortcut JSON need the feed key", async () => {
+    const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
+    await d.load();
+    await d.handle("POST", "/api/reminders", { enabled: true, everyMinutes: 240, from: "08:00", to: "20:00", days: [1, 3, 5], tz: "Europe/London" });
+    assert.equal(d.reminderFeed("ics", "anything").status, 404);
+    const key = (await d.handle("POST", "/api/reminders/feed-key", {})).body.settings.feedKey;
+    assert.match(key, /^[0-9a-f]{48}$/);
+    const ics = d.reminderFeed("ics", key, "https://tradera.example");
+    assert.equal(ics.contentType, "text/calendar; charset=utf-8");
+    assert.equal((ics.text.match(/BEGIN:VEVENT/g) || []).length, 4);
+    assert.ok(ics.text.includes("RRULE:FREQ=WEEKLY;BYDAY=MO,WE,FR"));
+    assert.ok(ics.text.includes("DTSTART;TZID=Europe/London:20260105T080000"));
+    assert.ok(ics.text.includes("BEGIN:VALARM"));
+    const today = d.reminderFeed("json", key);
+    assert.equal(today.body.list, "Tradera");
+    assert.ok(Array.isArray(today.body.items));
+    const rotated = (await d.handle("POST", "/api/reminders/feed-key", { rotate: true })).body.settings.feedKey;
+    assert.notEqual(rotated, key);
+    assert.equal(d.reminderFeed("ics", key).status, 404);
+  });
+
   await test("bulk add skips duplicates", async () => {
     const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
     await d.load();
@@ -494,6 +542,22 @@ async function test(name, fn) {
     assert.equal(other.statusCode, 404);
     const anon = await acc({ httpMethod: "GET", path: "/api/images/" + up.body.id, headers: {} });
     assert.equal(anon.statusCode, 401);
+  });
+
+  await test("accounts: reminder links work without a login, only with the right key", async () => {
+    const tok = (await call("POST", "/api/auth/login", { email: "owner@example.com", password: "newer-password-2" })).body.token;
+    await call("POST", "/api/reminders", { enabled: true, everyMinutes: 60, from: "09:00", to: "11:00", days: [0, 1, 2, 3, 4, 5, 6], tz: "UTC" }, tok);
+    const st = await call("POST", "/api/reminders/feed-key", {}, tok);
+    const { id } = st.body.account;
+    const key = st.body.settings.feedKey;
+    const ics = await acc({ httpMethod: "GET", path: "/api/reminders/calendar.ics", rawUrl: "https://t.example/api/reminders/calendar.ics", headers: {}, queryStringParameters: { u: id, k: key } });
+    assert.equal(ics.statusCode, 200);
+    assert.equal((ics.body.match(/BEGIN:VEVENT/g) || []).length, 3);
+    const bad = await acc({ httpMethod: "GET", path: "/api/reminders/today.json", headers: {}, queryStringParameters: { u: id, k: "0".repeat(48) } });
+    assert.equal(bad.statusCode, 404);
+    const json = await acc({ httpMethod: "GET", path: "/api/reminders/today.json", headers: {}, queryStringParameters: { u: id, k: key } });
+    assert.equal(json.statusCode, 200);
+    assert.equal(JSON.parse(json.body).list, "Tradera");
   });
 
   await test("accounts: closed sign-ups and account deletion", async () => {

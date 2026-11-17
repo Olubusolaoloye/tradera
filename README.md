@@ -209,6 +209,26 @@ CallMeBot is a free third-party service with no uptime guarantee, so keep ntfy o
 messages on too. Entry alerts on ntfy are sent as **urgent**, which sounds through Do Not Disturb
 on Android.
 
+## Chart check reminders
+
+**Alerts → Chart check reminders** nudges you to open your charts on a schedule: every
+30 minutes to 12 hours, between a first and last time, on the days you pick, in your
+device's time zone. Reminders go out through ntfy, Telegram and browser alerts (never a
+phone call) and list the setups closest to entry. Online, the 2-minute scheduled check
+sends them even when the app is closed.
+
+**On an iPhone** (websites cannot write to Apple's Reminders app directly):
+
+- **Calendar subscription:** *Add to iPhone Calendar* subscribes to
+  `/api/reminders/calendar.ics`, a repeating event with an alert for every check. Turn
+  off "Remove Alerts" for the subscribed calendar so the alerts ring.
+- **Reminders app:** an Apple Shortcut reads `/api/reminders/today.json` (today's
+  remaining checks) and adds each one to a *Tradera* list with an alert. A daily
+  Shortcuts automation runs it every morning. The steps are in the app.
+
+Both links carry a private key instead of a login; *make new links* in the app revokes
+the old ones.
+
 ## Install on your phone
 
 Open the deployed site in Safari or Chrome and use **Add to Home Screen**. The manifest,

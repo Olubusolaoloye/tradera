@@ -975,3 +975,31 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--brass); 
 .lightbox img { max-width: 100%; max-height: calc(100vh - 80px); object-fit: contain; border-radius: 8px; }
 .lightbox p { margin: 0; color: #ECEEF2; font-size: 13.5px; text-align: center; }
 .lb-close { position: absolute; top: 14px; right: 14px; color: #fff; }
+
+/* --------------------------------------------------------- chart reminders */
+
+.reminders .panel-head { display: flex; align-items: center; justify-content: space-between; }
+.reminder-lead { margin: 0 0 12px; font-size: 13px; line-height: 1.55; }
+.check-line.big { font-size: 14px; font-weight: 600; gap: 10px; }
+.check-line.big input { width: 20px; height: 20px; }
+.reminder-grid { margin-top: 12px; }
+.day-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.day-chip { position: relative; cursor: pointer; }
+.day-chip input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.day-chip span {
+  display: inline-flex; min-width: 46px; min-height: 38px; align-items: center; justify-content: center; padding: 0 10px;
+  border: 1px solid var(--line-strong); border-radius: 99px; font-size: 13px; font-weight: 600; color: var(--muted);
+}
+.day-chip input:checked + span { color: var(--brass-ink); background: var(--brass); border-color: var(--brass); }
+.day-chip input:focus-visible + span { outline: 2px solid var(--brass); outline-offset: 2px; }
+.reminder-summary { margin-top: 12px; font-size: 13px; color: var(--muted); line-height: 1.55; }
+.reminder-summary b { color: var(--text); }
+.iphone-sync { border-top: 1px solid var(--line); }
+.iphone-sync h3 { margin: 0 0 4px; font: 650 16px/1.3 var(--display); }
+.iphone-sync > p { margin: 0 0 12px; font-size: 13px; line-height: 1.55; }
+.sync-option { padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--sunken); margin-top: 10px; }
+.sync-option p { margin: 6px 0 10px; font-size: 13px; color: var(--muted); line-height: 1.55; }
+.sync-option .toolbar { margin: 0; }
+.sync-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.steps { margin: 4px 0 0; padding-left: 20px; display: grid; gap: 8px; font-size: 13px; line-height: 1.55; color: var(--text); }
+.steps .btn { margin-left: 4px; vertical-align: middle; }

@@ -1031,7 +1031,7 @@ function renderAlerts() {
 
   const browserOn = browserPermission === "granted" && ui.browserAlerts;
   const dot = (on, warn) => '<span class="state-dot ' + (on ? "on" : warn ? "warn" : "off") + '">' + (on ? "On" : warn ? "Blocked" : "Off") + "</span>";
-  return '<div class="channel-grid">' +
+  return remindersPanel() + '<div class="channel-grid section-gap">' +
     '<div class="channel ' + (ntfyOn ? "on" : "") + '"><div class="channel-top"><strong>Phone push (ntfy)</strong>' + dot(ntfyOn) + "</div>" +
       "<p>" + (ntfyOn ? "Sending to topic <b>" + esc(state.settings.ntfyTopic) + "</b>." :
         "Free phone notifications with no account. Install the ntfy app, pick a private topic and you are set.") + "</p>" +
@@ -1064,16 +1064,111 @@ function renderAlerts() {
         ? state.alerts.map(function (a) {
             const channels = (a.channels || []).map(c =>
               '<span class="chip">' + esc(c.channel || c) + (c.ok === false ? " failed" : " sent") + "</span>").join("");
-            return '<div class="alert-row row-link" data-action="chart" data-symbol="' + esc(a.symbol) + '">' +
-              '<div class="alert-ico ' + (a.kind === "entry" ? "entry" : a.kind === "test" ? "test" : "") + '">' + (a.kind === "entry" ? "◎" : a.kind === "test" ? "✓" : "↗") + "</div>" +
-              '<div class="alert-main"><b>' + esc(a.symbol) + " · " +
-                esc(a.kind === "entry" ? "Entry reached" : a.kind === "test" ? "Test alert" : "Getting close to entry") + "</b>" +
+            const reminder = a.kind === "reminder";
+            return '<div class="alert-row' + (reminder ? "" : " row-link") + '"' + (reminder ? "" : ' data-action="chart" data-symbol="' + esc(a.symbol) + '"') + ">" +
+              '<div class="alert-ico ' + (a.kind === "entry" ? "entry" : a.kind === "test" || reminder ? "test" : "") + '">' + (a.kind === "entry" ? "◎" : a.kind === "test" ? "✓" : reminder ? "⏰" : "↗") + "</div>" +
+              '<div class="alert-main"><b>' + (reminder ? "Chart check" : esc(a.symbol) + " · " +
+                esc(a.kind === "entry" ? "Entry reached" : a.kind === "test" ? "Test alert" : "Getting close to entry")) + "</b>" +
                 "<p>" + esc(a.message) + "</p>" +
                 (channels ? '<div class="chips">' + channels + "</div>" : "") + "</div>" +
               '<div class="alert-time">' + timeAgo(a.at) + "</div></div>";
           }).join("")
         : emptyState("◔", "No alerts yet", "When price nears one of your setups, the alert is logged here. Send a test alert to check your phone is wired up.", "")) +
     "</section>";
+}
+
+/* --------------------------------------------------------- chart reminders */
+
+const REMINDER_STEPS = [[30, "30 minutes"], [60, "1 hour"], [90, "1½ hours"], [120, "2 hours"], [180, "3 hours"], [240, "4 hours"], [360, "6 hours"], [480, "8 hours"], [720, "12 hours"]];
+const WEEK = [[1, "Mon"], [2, "Tue"], [3, "Wed"], [4, "Thu"], [5, "Fri"], [6, "Sat"], [0, "Sun"]];
+
+function deviceTimeZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch (_) { return "UTC"; }
+}
+
+function reminderTimes(r) {
+  const toMin = v => Number(v.slice(0, 2)) * 60 + Number(v.slice(3, 5));
+  const out = [];
+  for (let m = toMin(r.from); m <= toMin(r.to) && out.length < 48; m += Number(r.everyMinutes)) {
+    out.push(String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0"));
+  }
+  return out;
+}
+
+function feedUrl(kind) {
+  const key = state.settings.feedKey;
+  if (!key) return "";
+  const path = kind === "ics" ? "/api/reminders/calendar.ics" : "/api/reminders/today.json";
+  const q = "?" + (state.account && state.account.id ? "u=" + encodeURIComponent(state.account.id) + "&" : "") + "k=" + encodeURIComponent(key);
+  return location.origin + path + q;
+}
+
+function remindersPanel() {
+  const r = state.settings.reminders || { enabled: false, everyMinutes: 240, from: "08:00", to: "20:00", days: [1, 2, 3, 4, 5], tz: deviceTimeZone() };
+  const times = reminderTimes(r);
+  const next = state.nextReminderAt ? new Date(state.nextReminderAt) : null;
+  const nextText = next
+    ? (next.toDateString() === new Date().toDateString() ? "today " : next.toLocaleDateString(undefined, { weekday: "long" }) + " ") +
+      next.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+    : "";
+  const tzNote = r.tz && r.tz !== deviceTimeZone()
+    ? ' <span class="faint">Saved for ' + esc(r.tz) + "; saving again switches to this device's time zone (" + esc(deviceTimeZone()) + ").</span>"
+    : "";
+  const ics = feedUrl("ics");
+  const today = feedUrl("json");
+
+  return '<section class="panel reminders">' +
+    '<div class="panel-head"><h2>Chart check reminders</h2>' +
+      '<span class="state-dot ' + (r.enabled ? "on" : "off") + '">' + (r.enabled ? "On" : "Off") + "</span></div>" +
+    '<form id="remindersForm" class="panel-body">' +
+      '<p class="muted reminder-lead">A nudge to open your charts on a schedule, even when nothing is near entry. It comes through your ntfy, Telegram and browser alerts, and lists the setups closest to entry.</p>' +
+      '<label class="check-line big"><input type="checkbox" name="enabled"' + (r.enabled ? " checked" : "") + "> Remind me to check my charts</label>" +
+      '<div class="form-grid reminder-grid">' +
+        '<label class="field"><span>Every</span><select name="everyMinutes">' +
+          REMINDER_STEPS.map(x => '<option value="' + x[0] + '"' + (Number(r.everyMinutes) === x[0] ? " selected" : "") + ">" + x[1] + "</option>").join("") +
+        "</select></label>" +
+        '<label class="field"><span>First check</span><input type="time" name="from" value="' + esc(r.from) + '" required></label>' +
+        '<label class="field"><span>Last check <em>no later than</em></span><input type="time" name="to" value="' + esc(r.to) + '" required></label>' +
+      "</div>" +
+      '<div class="field" style="margin-top:12px"><span class="field-label">On these days</span><div class="day-chips">' +
+        WEEK.map(d => '<label class="day-chip"><input type="checkbox" name="day" value="' + d[0] + '"' + (r.days.includes(d[0]) ? " checked" : "") + "><span>" + d[1] + "</span></label>").join("") +
+      "</div></div>" +
+      '<div class="reminder-summary" id="reminderSummary">' +
+        (r.enabled && times.length ? "Checks at <b>" + times.join(", ") + "</b>." + (nextText ? " Next: <b>" + esc(nextText) + "</b>." : "") : "Reminders are off.") + tzNote +
+      "</div>" +
+      '<div class="toolbar" style="margin:12px 0 0">' +
+        '<button class="btn primary small" type="submit">Save reminders</button>' +
+        '<button class="btn ghost small" type="button" data-action="test-reminder">Send one now</button>' +
+      "</div>" +
+    "</form>" +
+
+    '<div class="panel-body iphone-sync">' +
+      "<h3>Put them on your iPhone</h3>" +
+      '<p class="muted">Apple does not let websites write to the Reminders app directly, so pick one of these. Both update themselves when you change the schedule above.</p>' +
+      (!state.settings.feedKey
+        ? '<button class="btn small" type="button" data-action="feed-key">Create my iPhone links</button>'
+        : '<div class="sync-option">' +
+            '<div class="sync-head"><b>Option 1 · iPhone Calendar</b><span class="pill triggered">Easiest</span></div>' +
+            "<p>One tap. Every check appears in your Calendar with an alert at the exact time.</p>" +
+            '<div class="toolbar"><a class="btn primary small" href="' + esc(ics.replace(/^https?:/, "webcal:")) + '">Add to iPhone Calendar</a>' +
+              '<button class="btn ghost small" type="button" data-action="copy-text" data-text="' + esc(ics) + '">Copy link</button></div>' +
+            '<p class="field-note">Then on the iPhone: Settings → Apps → Calendar → Calendar Accounts → Subscribed Calendars → <b>Tradera chart checks</b>, and turn <b>off</b> “Remove Alerts”, so the alerts ring.</p>' +
+          "</div>" +
+          '<div class="sync-option">' +
+            '<div class="sync-head"><b>Option 2 · Reminders app</b><span class="pill watching">Automatic each morning</span></div>' +
+            "<p>An Apple Shortcut copies the day's checks into a <b>Tradera</b> list in Reminders, with an alert on each. You set it up once:</p>" +
+            '<ol class="steps">' +
+              "<li>In the <b>Reminders</b> app, create a list called <b>Tradera</b>.</li>" +
+              '<li>Open <b>Shortcuts</b> → <b>+</b>. Add <b>Get Contents of URL</b> and paste this link: <button class="btn ghost small" type="button" data-action="copy-text" data-text="' + esc(today) + '">Copy Shortcut link</button></li>' +
+              "<li>Add <b>Get Dictionary Value</b>: get <b>Value</b> for key <b>items</b> in <i>Contents of URL</i>.</li>" +
+              "<li>Add <b>Repeat with Each</b> item in <i>Dictionary Value</i>. Inside it, add <b>Get Dictionary Value</b> for key <b>title</b> in <i>Repeat Item</i>, and another for key <b>due</b> in <i>Repeat Item</i>.</li>" +
+              "<li>Still inside, add <b>Add New Reminder</b>: use the <i>title</i> value, list <b>Tradera</b>, tap the arrow, turn on <b>Remind Me</b> → <b>At a Time</b>, and pick the <i>due</i> value as the date.</li>" +
+              "<li>Name it <b>Tradera chart checks</b>. In the <b>Automation</b> tab tap <b>+</b> → <b>Time of Day</b>, choose a time before your first check, <b>Daily</b>, <b>Run Immediately</b>, and pick the shortcut.</li>" +
+            "</ol>" +
+          "</div>" +
+          '<p class="field-note">These links are private to you. If one gets shared by mistake, <button class="link-btn" type="button" data-action="feed-key-rotate">make new links</button> (the old ones stop working).</p>') +
+    "</div>" +
+  "</section>";
 }
 
 /* ---------------------------------------------------------------- settings */
@@ -1222,6 +1317,29 @@ function attachViewListeners() {
       ui.journal.pair = pr.value;
       const box = document.getElementById("journalTable");
       if (box) box.innerHTML = journalTableHtml();
+    });
+  }
+
+  if (ui.view === "alerts") {
+    const form = document.getElementById("remindersForm");
+    if (form) form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const days = fd.getAll("day").map(Number);
+      const payload = {
+        enabled: fd.get("enabled") === "on",
+        everyMinutes: Number(fd.get("everyMinutes")),
+        from: fd.get("from"),
+        to: fd.get("to"),
+        days,
+        tz: deviceTimeZone()
+      };
+      if (payload.enabled && !days.length) return toast("Pick a day", "Choose at least one day for your chart checks.", "error");
+      try {
+        applyState(await post("/api/reminders", payload));
+        toast(payload.enabled ? "Reminders saved" : "Reminders off",
+          payload.enabled ? "Tradera will remind you at " + reminderTimes(payload).join(", ") + "." : "No more chart-check reminders.");
+      } catch (err) { toast("Could not save reminders", err.message, "error"); }
     });
   }
 
@@ -1441,6 +1559,14 @@ function connectSSE() {
 }
 
 function showAlert(alert) {
+  if (alert.kind === "reminder") {
+    toast("Time to check your charts", alert.message, "alert", 12000);
+    if (ui.browserAlerts && "Notification" in window && Notification.permission === "granted") {
+      try { new Notification("Time to check your charts", { body: alert.message, tag: alert.id }); } catch (_) { /* ignore */ }
+    }
+    beep();
+    return;
+  }
   const entry = alert.kind === "entry";
   toast(entry ? alert.symbol + " reached your entry" : alert.symbol + " is getting close",
     alert.message, "alert", 12000);
@@ -2266,6 +2392,29 @@ document.addEventListener("click", async function (e) {
       if (!(await confirmDialog("Remove " + symbol + "?", "Any setups for " + symbol + " are removed too. Your journal keeps its trades.", "Remove"))) return;
       applyState(await api("/api/pairs/" + encodeURIComponent(symbol), { method: "DELETE" }));
       toast("Market removed", symbol + " is off your watchlist.");
+      return;
+    }
+    if (action === "test-reminder") {
+      const next = await post("/api/reminders/test");
+      applyState(next);
+      const ok = (next.testResult || []).filter(c => c.ok).map(c => c.channel);
+      toast("Reminder sent", ok.length ? "Delivered by " + ok.join(" and ") + "." : "Shown here. Set up ntfy or Telegram in Settings to get it on your phone.");
+      return;
+    }
+    if (action === "feed-key" || action === "feed-key-rotate") {
+      if (action === "feed-key-rotate" && !(await confirmDialog("Make new iPhone links?", "The calendar subscription and Shortcut link you set up stop working, and you will need to add the new ones.", "Make new links"))) return;
+      applyState(await post("/api/reminders/feed-key", { rotate: action === "feed-key-rotate" }));
+      toast(action === "feed-key" ? "iPhone links ready" : "New links made", "Follow the steps below on your iPhone.");
+      return;
+    }
+    if (action === "copy-text") {
+      const text = el.dataset.text || "";
+      try {
+        await navigator.clipboard.writeText(text);
+        toast("Copied", "Paste it on your iPhone.");
+      } catch (_) {
+        window.prompt("Copy this link:", text);
+      }
       return;
     }
     if (action === "test-alert") {

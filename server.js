@@ -202,6 +202,17 @@ const server = http.createServer(async (req, res) => {
     return sendJSON(res, 200, { ok: true, mode: "local", now: Date.now() });
   }
 
+  // iPhone calendar / Shortcut reminder links carry their own secret key.
+  const feedFormat = { "/api/reminders/calendar.ics": "ics", "/api/reminders/today.json": "json" }[pathname];
+  if (feedFormat && req.method === "GET") {
+    const feed = desk.reminderFeed(feedFormat, url.searchParams.get("k"), "http://" + (req.headers.host || "127.0.0.1"));
+    if (feed.text) {
+      res.writeHead(200, { "Content-Type": feed.contentType, "Cache-Control": "no-store" });
+      return res.end(feed.text);
+    }
+    return sendJSON(res, feed.status || 200, feed.body);
+  }
+
   // Everything else under /api needs a login once a password is set. The live
   // stream can't send headers (EventSource), so it passes the token as ?key=.
   if (pathname.startsWith("/api/")) {
