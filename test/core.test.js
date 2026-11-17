@@ -560,6 +560,16 @@ async function test(name, fn) {
     assert.equal(JSON.parse(json.body).list, "Tradera");
   });
 
+  await test("accounts: every request opens its own Blobs connection (no expired tokens)", async () => {
+    const mem = createMemoryBlobs();
+    let opened = 0;
+    const h = createHandler({ accounts: true, getStore: () => { opened++; return mem; } });
+    const ev = { httpMethod: "GET", path: "/api/auth/status", headers: {} };
+    assert.equal((await h(ev)).statusCode, 200);
+    assert.equal((await h(ev)).statusCode, 200);
+    assert.equal(opened, 2);
+  });
+
   await test("accounts: closed sign-ups and account deletion", async () => {
     const closed = createHandler({ accounts: true, blobs, signups: false });
     const res = await closed({ httpMethod: "POST", path: "/api/auth/signup", headers: {}, body: JSON.stringify({ email: "x@example.com", password: "xxxxxxxx1" }) });
