@@ -524,12 +524,15 @@ function renderChrome() {
   const actions = document.getElementById("topActions");
   if (ui.view === "dashboard") {
     actions.innerHTML =
+      '<button class="btn ghost" data-action="import-setup">' + icon("plus") + "Paste setup</button>" +
       '<button class="btn ghost" data-action="new-setup">' + icon("plus") + "New setup</button>" +
       '<button class="btn primary" data-action="new-trade">' + icon("plus") + "New trade</button>";
   } else if (ui.view === "journal") {
     actions.innerHTML = '<button class="btn primary" data-action="new-trade">' + icon("plus") + "New trade</button>";
   } else if (ui.view === "setups") {
-    actions.innerHTML = '<button class="btn primary" data-action="new-setup">' + icon("plus") + "New setup</button>";
+    actions.innerHTML =
+      '<button class="btn ghost" data-action="import-setup">' + icon("plus") + "Paste or upload</button>" +
+      '<button class="btn primary" data-action="new-setup">' + icon("plus") + "New setup</button>";
   } else if (ui.view === "alerts") {
     actions.innerHTML = '<button class="btn" data-action="test-alert">' + icon("bell") + "Send test alert</button>";
   } else {
@@ -2002,6 +2005,219 @@ document.getElementById("lightbox").addEventListener("click", function () {
   document.getElementById("lightboxImg").removeAttribute("src");
 });
 
+/* ------------------------------------------------- paste / upload a setup */
+
+/** Free text reader for screenshots of written signals (loaded on first use). */
+let ocrLoader = null;
+function loadOCR() {
+  if (window.Tesseract) return Promise.resolve(window.Tesseract);
+  if (!ocrLoader) {
+    ocrLoader = new Promise(function (resolve, reject) {
+      const tag = document.createElement("script");
+      tag.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js";
+      tag.async = true;
+      tag.onload = function () { window.Tesseract ? resolve(window.Tesseract) : reject(new Error("The text reader did not load.")); };
+      tag.onerror = function () { ocrLoader = null; reject(new Error("Could not load the text reader. Check your connection.")); };
+      document.head.appendChild(tag);
+    });
+  }
+  return ocrLoader;
+}
+async function readTextFromImage(dataUrl, onProgress) {
+  const T = await loadOCR();
+  const result = await T.recognize(dataUrl, "eng", {
+    logger: function (m) {
+      if (m && m.status === "recognizing text" && onProgress) onProgress(Math.round((m.progress || 0) * 100));
+    }
+  });
+  return (result && result.data && result.data.text) || "";
+}
+
+function importCard(s, i) {
+  const dir = s.direction === "short" ? "short" : "long";
+  const val = function (v) { return v === null || v === undefined ? "" : esc(v); };
+  const issues = []
+    .concat((s.missing || []).map(function (m) { return "Missing " + m + " — fill it in."; }))
+    .concat(s.directionGuessed && (s.missing || []).indexOf("direction") < 0 ? ["Direction guessed — check it."] : [])
+    .concat(s.warnings || []);
+  return '<div class="import-card" data-i="' + i + '">' +
+    '<label class="import-keep"><input type="checkbox" name="keep-' + i + '" checked> <span>Watch this setup</span></label>' +
+    '<div class="form-grid">' +
+      '<div class="field"><span class="field-label">Pair</span>' + pickerField('<input name="symbol-' + i + '" data-picker="all" value="' + val(s.symbol) + '" placeholder="Tap to pick" autocomplete="off" aria-label="Pair">') + "</div>" +
+      '<div class="field"><span style="font-size:12.5px;font-weight:600;color:var(--muted)">Direction</span>' +
+        '<div class="segmented" role="radiogroup" aria-label="Direction" style="margin-top:6px">' +
+          '<label class="long"><input type="radio" name="direction-' + i + '" value="long"' + (dir === "long" ? " checked" : "") + "><span>▲ Long</span></label>" +
+          '<label class="short"><input type="radio" name="direction-' + i + '" value="short"' + (dir === "short" ? " checked" : "") + "><span>▼ Short</span></label>" +
+        "</div></div>" +
+      '<label class="field"><span>Entry</span><input name="entry-' + i + '" type="number" step="any" inputmode="decimal" value="' + val(s.entry) + '"></label>' +
+      '<label class="field"><span>Stop</span><input name="stop-' + i + '" type="number" step="any" inputmode="decimal" value="' + val(s.stop) + '"></label>' +
+      '<label class="field"><span>Target</span><input name="target-' + i + '" type="number" step="any" inputmode="decimal" value="' + val(s.target) + '"></label>' +
+      '<label class="field"><span>Alert distance <em>pips / pts</em></span><input name="threshold-' + i + '" type="number" min="1" step="1" value="' + esc(state.settings.defaultThresholdPips) + '"></label>' +
+      '<label class="field full"><span>Label</span><input name="label-' + i + '" value="' + val(s.label) + '" placeholder="e.g. London sweep of Asian low"></label>' +
+    "</div>" +
+    (issues.length ? '<div class="import-issues">' + issues.map(function (x) { return "<div>" + esc(x) + "</div>"; }).join("") + "</div>" : "") +
+    (s.note ? '<div class="import-note">' + esc(s.note) + "</div>" : "") +
+  "</div>";
+}
+
+function openImportForm() {
+  let shot = null;     // compressed screenshot (data URL)
+  let found = [];      // setups read so far
+  openModal(
+    modalHeader("Paste or upload a setup",
+      "Paste a signal or add a screenshot. Tradera reads the pair, entry, stop and target, you check them, and it starts watching.") +
+    '<form id="importForm" novalidate>' +
+      '<label class="field"><span>Signal text</span><textarea name="text" rows="5" placeholder="e.g. XAUUSD BUY LIMIT 2345  SL 2338  TP1 2352  TP2 2360&#10;&#10;You can paste several setups at once, or paste a screenshot here."></textarea></label>' +
+      '<div class="import-shot">' +
+        '<label class="btn ghost import-upload">' + icon("plus") + '<span>Add screenshot</span><input type="file" name="shot" accept="image/*" hidden></label>' +
+        '<div class="import-thumb" id="importThumb" hidden></div>' +
+        '<p class="import-hint">' + (state.readerAI
+          ? "Chart screenshots are read by AI. Screenshots of written signals work too."
+          : "Screenshots of written signals (Telegram, WhatsApp…) are read on this device. Charts with only drawn lines need the AI chart reader switched on.") + "</p>" +
+      "</div>" +
+      '<div class="import-status" id="importStatus" hidden></div>' +
+      formError() +
+      '<div class="form-actions"><button class="btn" type="button" data-close>Cancel</button>' +
+        '<button class="btn primary" type="submit" id="importRead">Read setup</button></div>' +
+      '<div id="importResults"></div>' +
+    "</form>"
+  );
+  const form = document.getElementById("importForm");
+  const statusEl = document.getElementById("importStatus");
+  const errEl = document.getElementById("formError");
+  const readBtn = document.getElementById("importRead");
+  const results = document.getElementById("importResults");
+  const say = function (text) { statusEl.hidden = !text; statusEl.textContent = text || ""; };
+  const fail = function (text) { errEl.textContent = text || ""; errEl.hidden = !text; };
+
+  const showResults = function (list, problem, via) {
+    found = list || [];
+    if (!found.length) {
+      results.innerHTML = "";
+      fail(problem || "No setup found. Check the text, or type the setup in with New setup.");
+      return;
+    }
+    fail("");
+    results.innerHTML =
+      '<div class="import-head"><b>' + found.length + (found.length === 1 ? " setup" : " setups") + " found</b>" +
+        "<span>" + (via === "ai" ? "Read by AI from the chart" : via === "ocr" ? "Read from the screenshot text" : "Read from your text") + " · check the numbers</span></div>" +
+      found.map(importCard).join("") +
+      '<div class="form-actions"><button class="btn primary" type="button" id="importWatch">' + icon("bell") + "Start watching</button></div>";
+    document.getElementById("importWatch").addEventListener("click", watch);
+    results.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const readText = async function (text, via) {
+    const out = await post("/api/setups/read", { text: text });
+    showResults(out.setups, out.problem, via || "text");
+  };
+
+  const readShot = async function () {
+    if (state.readerAI) {
+      say("Reading the chart…");
+      try {
+        const out = await post("/api/setups/read", { image: shot });
+        if (out.setups && out.setups.length) { showResults(out.setups, null, "ai"); return; }
+        say("No setup on the chart; reading any text in the screenshot…");
+      } catch (error) {
+        say(error.message + " Reading the screenshot text instead…");
+      }
+    } else {
+      say("Reading the screenshot text…");
+    }
+    const text = await readTextFromImage(shot, function (pct) { say("Reading the screenshot text… " + pct + "%"); });
+    if (!text.trim()) throw new Error("No text found in that screenshot." + (state.readerAI ? "" : " Chart pictures need the AI chart reader; you can type the setup instead."));
+    form.elements.text.value = text.trim();
+    await readText(text, "ocr");
+  };
+
+  const run = async function () {
+    fail("");
+    readBtn.disabled = true;
+    try {
+      const text = form.elements.text.value.trim();
+      if (shot && !text) await readShot();
+      else if (text) await readText(text, "text");
+      else fail("Paste a signal or add a screenshot first.");
+    } catch (error) {
+      fail(error.message);
+    } finally {
+      say("");
+      readBtn.disabled = false;
+    }
+  };
+
+  const useImage = async function (file) {
+    fail("");
+    try {
+      shot = await compressImage(file);
+      const thumb = document.getElementById("importThumb");
+      thumb.hidden = false;
+      thumb.innerHTML = '<img alt="Setup screenshot" src="' + shot + '"><button type="button" class="icon-btn" aria-label="Remove screenshot">' + icon("close") + "</button>";
+      thumb.querySelector("button").addEventListener("click", function () { shot = null; thumb.hidden = true; thumb.innerHTML = ""; });
+      form.elements.text.value = "";
+      await run();
+    } catch (error) {
+      fail(error.message);
+    }
+  };
+
+  form.elements.shot.addEventListener("change", function () {
+    if (this.files && this.files[0]) useImage(this.files[0]);
+    this.value = "";
+  });
+  form.elements.text.addEventListener("paste", function (e) {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    for (let k = 0; k < items.length; k++) {
+      if (items[k].kind === "file" && /^image\//.test(items[k].type)) {
+        e.preventDefault();
+        useImage(items[k].getAsFile());
+        return;
+      }
+    }
+  });
+  form.addEventListener("submit", function (e) { e.preventDefault(); run(); });
+  setTimeout(function () { form.elements.text.focus(); }, 50);
+
+  async function watch() {
+    fail("");
+    const list = [];
+    const f = form.elements;
+    for (let i = 0; i < found.length; i++) {
+      if (!f["keep-" + i].checked) continue;
+      const symbol = String(f["symbol-" + i].value || "").toUpperCase().replace(/\s+/g, "");
+      const entry = n(f["entry-" + i].value);
+      if (!symbol) return fail("Setup " + (i + 1) + ": pick the pair.");
+      if (entry === null || entry <= 0) return fail("Setup " + (i + 1) + ": enter the entry price.");
+      const dirEl = form.querySelector('input[name="direction-' + i + '"]:checked');
+      list.push({
+        symbol: symbol,
+        direction: dirEl ? dirEl.value : "long",
+        entry: entry,
+        stop: f["stop-" + i].value,
+        target: f["target-" + i].value,
+        thresholdPips: f["threshold-" + i].value,
+        label: f["label-" + i].value,
+        note: [found[i].note, found[i].source ? "Pasted: " + found[i].source : ""].filter(Boolean).join("\n"),
+        priority: "medium"
+      });
+    }
+    if (!list.length) return fail("Tick at least one setup to watch.");
+    const btn = document.getElementById("importWatch");
+    btn.disabled = true;
+    try {
+      const next = await post("/api/setups/batch", { setups: list });
+      closeModal();
+      applyState(next);
+      toast(list.length === 1 ? "Setup added" : list.length + " setups added",
+        list.map(function (x) { return symLabel(x.symbol) + " " + (x.direction === "short" ? "sell" : "buy") + " " + fmtPrice(x.symbol, x.entry); }).join(" · ") + ". You'll get an alert when price comes close.");
+    } catch (error) {
+      fail(error.message);
+      btn.disabled = false;
+    }
+  }
+}
+
 /* --------------------------------------------------------------- setup form */
 
 function openSetupForm(setup) {
@@ -2280,6 +2496,7 @@ document.addEventListener("click", async function (e) {
   try {
     if (action === "new-trade") return openTradeForm();
     if (action === "new-setup") return openSetupForm();
+    if (action === "import-setup") return openImportForm();
     if (action === "edit-trade") {
       const trade = state.trades.find(t => t.id === id);
       if (trade) openTradeForm(trade);

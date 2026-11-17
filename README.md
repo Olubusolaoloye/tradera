@@ -209,6 +209,20 @@ CallMeBot is a free third-party service with no uptime guarantee, so keep ntfy o
 messages on too. Entry alerts on ntfy are sent as **urgent**, which sounds through Do Not Disturb
 on Android.
 
+## Paste or upload a setup
+
+On **Setups** (or the dashboard) tap **Paste or upload**. Paste a signal, for example
+`XAUUSD BUY LIMIT 2345 SL 2338 TP1 2352 TP2 2360`, or add or paste a screenshot. Tradera reads
+the pair, direction, entry, stop and target (several setups in one paste work too), shows them
+for you to check and fix, and **Start watching** puts them on watch with alerts.
+
+- Text and screenshots of written signals (Telegram, WhatsApp…) are read for free; screenshot
+  text is read on the device with Tesseract.js.
+- Chart screenshots with only drawn lines need the optional AI chart reader: add
+  `ANTHROPIC_API_KEY` (your own key from console.anthropic.com) to the site's environment
+  variables on Netlify, or to the environment before `node server.js`. It uses Claude Opus 5.5
+  (change it with `TRADERA_AI_MODEL`), and each chart read is billed to that key.
+
 ## Chart check reminders
 
 **Alerts → Chart check reminders** nudges you to open your charts on a schedule: every

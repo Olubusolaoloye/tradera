@@ -207,6 +207,50 @@ async function test(name, fn) {
     assert.equal(d.reminderFeed("ics", key).status, 404);
   });
 
+  await test("setup reader: common signal formats", async () => {
+    const { parseSetupText } = require("../lib/setup-reader");
+    const one = t => { const r = parseSetupText(t); assert.equal(r.length, 1, t); const x = r[0]; return [x.symbol, x.direction, x.entry, x.stop, x.target]; };
+    assert.deepEqual(one("XAUUSD BUY LIMIT 2345.5\nSL 2338\nTP1 2352\nTP2 2360"), ["XAUUSD", "long", 2345.5, 2338, 2352]);
+    assert.deepEqual(one("Sell EUR/USD @ 1.0850, stop loss 30 pips, take profit 1.0790"), ["EURUSD", "short", 1.085, 1.088, 1.079]);
+    assert.deepEqual(one("V75 (1s) buy zone 4120-4125 / sl 4100 / tp 4180"), ["1HZ75V", "long", 4125, 4100, 4180]);
+    assert.deepEqual(one("GBPJPY SELL NOW 191.200\nSL: 191.800\nTP: 190.500"), ["GBPJPY", "short", 191.2, 191.8, 190.5]);
+    assert.deepEqual(one("Gold sell 2,410.50 sl 2,418 tp 2,395"), ["XAUUSD", "short", 2410.5, 2418, 2395]);
+    assert.deepEqual(one("US30\nEntry: 39250\nStop: 39100\nTarget: 39600"), ["US30", "long", 39250, 39100, 39600]);
+    assert.deepEqual(one("Step Index 200 long from 7850.3 SL 7840 TP 7880"), ["STPRNG2", "long", 7850.3, 7840, 7880]);
+    assert.deepEqual(one("Volatility 100 Index sell 1250.55 tp 1230 sl 1262"), ["R_100", "short", 1250.55, 1262, 1230]);
+    const two = parseSetupText("EURUSD buy 1.0800 sl 1.0770 tp 1.0860\n\nGBPUSD sell 1.2700 sl 1.2740 tp 1.2620");
+    assert.deepEqual(two.map(x => x.symbol), ["EURUSD", "GBPUSD"]);
+    const bad = parseSetupText("EURUSD buy 1.0800 sl 1.0850")[0];
+    assert.ok(bad.warnings.length, "a buy with the stop above entry is flagged");
+    assert.equal(parseSetupText("hello there").length, 0);
+  });
+
+  await test("setup reader routes: read never saves; batch adds to the watchlist", async () => {
+    const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
+    await d.load();
+    let res = await d.handle("POST", "/api/setups/read", { text: "NAS100 entry 18250 SL 18100 TP 18600" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.setups.length, 1);
+    assert.equal(d.state().setups.length, 0);
+    res = await d.handle("POST", "/api/setups/read", { text: "nothing useful" });
+    assert.equal(res.body.setups.length, 0);
+    assert.ok(res.body.problem);
+    res = await d.handle("POST", "/api/setups/read", { image: "data:image/png;base64,iVBORw0KGgo=" });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.needsText, true);
+    res = await d.handle("POST", "/api/setups/batch", { setups: [
+      { symbol: "NAS100", direction: "long", entry: 18250, stop: 18100, target: 18600, status: "triggered" },
+      { symbol: "R_75", direction: "short", entry: 4100 }
+    ] });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.added, 2);
+    assert.ok(res.body.setups.every(x => x.status === "watching"));
+    assert.ok(res.body.pairs.some(x => x.symbol === "R_75"));
+    res = await d.handle("POST", "/api/setups/batch", { setups: [{ symbol: "EURUSD" }] });
+    assert.equal(res.status, 400);
+    assert.equal(d.state().setups.length, 2);
+  });
+
   await test("bulk add skips duplicates", async () => {
     const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
     await d.load();
