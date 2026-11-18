@@ -283,6 +283,7 @@ async function showGate(mode) {
       ui.authInfo = ui.authInfo || { signups: true };
     }
     const info = ui.authInfo || {};
+    if (info.maintenance) { showMaintenance(info.maintenance.message); return; }
     setGateStep(store("email") || info.signups === false ? "login" : info.legacy ? "signup" : "login");
     gate.hidden = false;
     return;
@@ -322,7 +323,7 @@ function setGateStep(step) {
   $("gateLabel").textContent = signup ? "Choose a password" : "Password";
   const key = $("gateKey");
   key.value = "";
-  key.placeholder = signup ? "At least 8 characters" : "Your password";
+  key.placeholder = signup ? "At least 10 characters" : "Your password";
   key.autocomplete = signup ? "new-password" : "current-password";
   $("gateRepeatField").hidden = !signup;
   $("gateRepeat").value = "";
@@ -359,6 +360,26 @@ function hideGate() {
   if (gate) gate.hidden = true;
 }
 
+/** Platform switches set by the admin (online version). Missing = on. */
+function feat(name) {
+  return !(state && state.features && state.features[name] === false);
+}
+
+/** Maintenance mode: cover the app with the admin's message. */
+function showMaintenance(message) {
+  let box = document.getElementById("maintenance");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "maintenance";
+    box.className = "maintenance";
+    box.setAttribute("role", "alert");
+    document.body.appendChild(box);
+  }
+  box.innerHTML = '<div class="maintenance-card"><h2>Down for maintenance</h2><p></p><button class="btn primary" type="button">Try again</button></div>';
+  box.querySelector("p").textContent = message || "Tradera is being updated. Please check back soon.";
+  box.querySelector("button").addEventListener("click", function () { location.reload(); });
+}
+
 async function api(path, options) {
   const opts = options || {};
   const headers = { "Content-Type": "application/json", ...authHeaders(), ...(opts.headers || {}) };
@@ -369,6 +390,10 @@ async function api(path, options) {
     signOutLocally();
     showGate(data.auth);
     throw new Error(data.error || "Please log in");
+  }
+  if (res.status === 503 && data.maintenance) {
+    showMaintenance(data.error);
+    throw new Error(data.error || "Down for maintenance");
   }
   if (!res.ok) throw new Error(data.error || "Request failed (" + res.status + ")");
   return data;
@@ -524,14 +549,14 @@ function renderChrome() {
   const actions = document.getElementById("topActions");
   if (ui.view === "dashboard") {
     actions.innerHTML =
-      '<button class="btn ghost" data-action="import-setup">' + icon("plus") + "Paste setup</button>" +
+      (feat("pasteImport") ? '<button class="btn ghost" data-action="import-setup">' + icon("plus") + "Paste setup</button>" : "") +
       '<button class="btn ghost" data-action="new-setup">' + icon("plus") + "New setup</button>" +
       '<button class="btn primary" data-action="new-trade">' + icon("plus") + "New trade</button>";
   } else if (ui.view === "journal") {
     actions.innerHTML = '<button class="btn primary" data-action="new-trade">' + icon("plus") + "New trade</button>";
   } else if (ui.view === "setups") {
     actions.innerHTML =
-      '<button class="btn ghost" data-action="import-setup">' + icon("plus") + "Paste or upload</button>" +
+      (feat("pasteImport") ? '<button class="btn ghost" data-action="import-setup">' + icon("plus") + "Paste or upload</button>" : "") +
       '<button class="btn primary" data-action="new-setup">' + icon("plus") + "New setup</button>";
   } else if (ui.view === "alerts") {
     actions.innerHTML = '<button class="btn" data-action="test-alert">' + icon("bell") + "Send test alert</button>";
@@ -557,6 +582,13 @@ function renderView() {
   else if (ui.view === "pairs") viewEl.innerHTML = renderPairs();
   else if (ui.view === "alerts") viewEl.innerHTML = renderAlerts();
   else viewEl.innerHTML = renderSettings();
+  if (state.announcement) {
+    const bar = document.createElement("div");
+    bar.className = "announce";
+    bar.setAttribute("role", "status");
+    bar.textContent = state.announcement;
+    viewEl.insertBefore(bar, viewEl.firstChild);
+  }
   attachViewListeners();
   updateLiveNodes();
 }
@@ -1069,22 +1101,23 @@ function renderAlerts() {
 
   const browserOn = browserPermission === "granted" && ui.browserAlerts;
   const dot = (on, warn) => '<span class="state-dot ' + (on ? "on" : warn ? "warn" : "off") + '">' + (on ? "On" : warn ? "Blocked" : "Off") + "</span>";
-  return remindersPanel() + '<div class="channel-grid section-gap">' +
-    '<div class="channel ' + (pushOn ? "on" : "") + '"><div class="channel-top"><strong>Alarm (Pushover)</strong>' + dot(pushOn) + "</div>" +
+  const card = (name, html) => feat(name) ? html : "";
+  return (feat("reminders") ? remindersPanel() : "") + '<div class="channel-grid section-gap">' +
+    card("pushover", '<div class="channel ' + (pushOn ? "on" : "") + '"><div class="channel-top"><strong>Alarm (Pushover)</strong>' + dot(pushOn) + "</div>" +
       "<p>" + (pushOn ? "Entry alerts sound as an alarm, even on silent, and repeat every 30 seconds until you tap them."
         : "Best way not to miss an entry: a loud alarm that rings through silent mode and Do Not Disturb until you tap it. One-off $5 app.") + "</p>" +
-      '<button class="btn ghost small" data-' + (pushOn ? 'action="test-alert"' : 'view="settings"') + ">" + (pushOn ? "Send test alarm" : "Set up alarm") + "</button></div>" +
-    '<div class="channel ' + (ntfyOn ? "on" : "") + '"><div class="channel-top"><strong>Phone push (ntfy)</strong>' + dot(ntfyOn) + "</div>" +
+      '<button class="btn ghost small" data-' + (pushOn ? 'action="test-alert"' : 'view="settings"') + ">" + (pushOn ? "Send test alarm" : "Set up alarm") + "</button></div>") +
+    card("ntfy", '<div class="channel ' + (ntfyOn ? "on" : "") + '"><div class="channel-top"><strong>Phone push (ntfy)</strong>' + dot(ntfyOn) + "</div>" +
       "<p>" + (ntfyOn ? "Sending to topic <b>" + esc(state.settings.ntfyTopic) + "</b>." :
         "Free phone notifications with no account. Install the ntfy app, pick a private topic and you are set.") + "</p>" +
-      '<button class="btn ghost small" data-view="settings">' + (ntfyOn ? "Manage topic" : "Set up ntfy") + "</button></div>" +
-    '<div class="channel ' + (tgOn ? "on" : "") + '"><div class="channel-top"><strong>Telegram</strong>' + dot(tgOn) + "</div>" +
+      '<button class="btn ghost small" data-view="settings">' + (ntfyOn ? "Manage topic" : "Set up ntfy") + "</button></div>") +
+    card("telegram", '<div class="channel ' + (tgOn ? "on" : "") + '"><div class="channel-top"><strong>Telegram</strong>' + dot(tgOn) + "</div>" +
       "<p>" + (tgOn ? "Bot configured and ready." : "Create a bot with @BotFather, then add its token and your chat ID.") + "</p>" +
-      '<button class="btn ghost small" data-view="settings">' + (tgOn ? "Manage bot" : "Set up Telegram") + "</button></div>" +
-    '<div class="channel ' + (callOn ? "on" : "") + '"><div class="channel-top"><strong>Telegram call (basic)</strong>' + dot(callOn) + "</div>" +
+      '<button class="btn ghost small" data-view="settings">' + (tgOn ? "Manage bot" : "Set up Telegram") + "</button></div>") +
+    card("telegramCalls", '<div class="channel ' + (callOn ? "on" : "") + '"><div class="channel-top"><strong>Telegram call (basic)</strong>' + dot(callOn) + "</div>" +
       "<p>" + (callOn ? "Tradera rings <b>" + esc(state.settings.callmebotUser) + "</b> on Telegram and reads the alert aloud when price reaches an entry."
         : "Get a real Telegram voice call when price hits your entry, so you never sleep through a setup.") + "</p>" +
-      '<button class="btn ghost small" data-' + (callOn ? 'action="test-call"' : 'view="settings"') + ">" + (callOn ? "Test call" : "Set up calls") + "</button></div>" +
+      '<button class="btn ghost small" data-' + (callOn ? 'action="test-call"' : 'view="settings"') + ">" + (callOn ? "Test call" : "Set up calls") + "</button></div>") +
     '<div class="channel ' + (browserOn ? "on" : "") + '"><div class="channel-top"><strong>This browser</strong>' + dot(browserOn, browserPermission === "denied") + "</div>" +
       "<p>" + (browserPermission === "granted"
         ? (ui.browserAlerts ? "Browser alerts are on for this device." : "Permission granted — enable alerts to use them.")
@@ -1225,7 +1258,7 @@ function securitySection() {
     return settingsSection("Account", "Signed in as <b>" + esc((state.account && state.account.email) || "") + "</b>. Use this email and password to log in on any device. Logins last 30 days.",
       '<div class="form-grid">' +
         '<label class="field full"><span>Current password</span><input id="pwCurrent" type="password" autocomplete="current-password"></label>' +
-        '<label class="field"><span>New password <em>8+ characters</em></span><input id="pwNew" type="password" autocomplete="new-password"></label>' +
+        '<label class="field"><span>New password <em>10+ characters</em></span><input id="pwNew" type="password" autocomplete="new-password"></label>' +
         '<label class="field"><span>Repeat new password</span><input id="pwRepeat" type="password" autocomplete="new-password"></label>' +
       "</div>" +
       '<div class="toolbar" style="margin:12px 0 0">' +
@@ -1234,12 +1267,13 @@ function securitySection() {
         '<button class="btn ghost small" type="button" data-action="logout-all">Log out other devices</button>' +
         '<button class="btn danger small" type="button" data-action="delete-account">Delete account</button>' +
       "</div>" +
-      '<div class="field-note" style="margin-top:8px">Changing your password, or logging out other devices, signs out every other phone and browser. Deleting your account needs your current password and removes your journal for good.</div>');
+      '<div class="field-note" style="margin-top:8px">Changing your password, or logging out other devices, signs out every other phone and browser. Deleting your account needs your current password and removes your journal for good.</div>' +
+      (state.account && state.account.admin ? '<div class="field-note" style="margin-top:8px"><b>Admin account.</b> Change this password in the <a href="/admin/" target="_blank" rel="noopener">admin dashboard</a>, which also asks for your 2-step code.</div>' : ""));
   }
   if (!state.passwordSet) {
     return settingsSection("Password", "Anyone who can open Tradera can see your journal. Set a password to require a login on every device.",
       '<div class="form-grid">' +
-        '<label class="field"><span>New password <em>8+ characters</em></span><input id="pwNew" type="password" autocomplete="new-password"></label>' +
+        '<label class="field"><span>New password <em>10+ characters</em></span><input id="pwNew" type="password" autocomplete="new-password"></label>' +
         '<label class="field"><span>Repeat password</span><input id="pwRepeat" type="password" autocomplete="new-password"></label>' +
       "</div>" +
       '<div class="toolbar" style="margin:12px 0 0"><button class="btn primary small" type="button" data-action="set-password">Set password</button></div>');
@@ -1924,6 +1958,7 @@ function shotsField() {
     '<div class="form-block-head"><h3>Screenshots</h3><p>Your chart at entry and at the exit. Add up to 8' +
       (matchMedia("(pointer: fine)").matches ? ", or paste one with Ctrl+V." : ".") + "</p></div>" +
     '<div class="shot-list"></div>' +
+    (feat("screenshots") ? "" : '<p class="field-note">Adding screenshots is switched off for now.</p>') +
     '<label class="shot-add">' + icon("camera") + "<span>Add screenshot</span>" +
       '<input type="file" accept="image/*" multiple aria-label="Add screenshots"></label>' +
   "</div>";
@@ -1999,7 +2034,7 @@ function attachShots(form, initial) {
         '<button type="button" class="shot-del" data-shot-del="' + i + '" aria-label="Remove screenshot">' + icon("close") + "</button>" +
       "</figure>";
     }).join("") + Array.from({ length: pending }, () => '<div class="shot shot-loading"><span>Uploading…</span></div>').join("");
-    add.hidden = shots.length + pending >= 8;
+    add.hidden = !feat("screenshots") || shots.length + pending >= 8;
   };
 
   const addFiles = async function (files) {
@@ -2170,7 +2205,7 @@ function openImportForm() {
   };
 
   const readShot = async function () {
-    if (state.readerAI && state.plan !== "free") {
+    if (state.readerAI && state.plan !== "free" && feat("aiChartReader")) {
       say("Reading the chart…");
       try {
         const out = await post("/api/setups/read", { image: shot });
@@ -2649,7 +2684,7 @@ document.addEventListener("click", async function (e) {
     }
     if (action === "set-password") {
       const val = id => (document.getElementById(id) || {}).value || "";
-      if (val("pwNew").length < 8) return toast("Password too short", "Use at least 8 characters.", "error");
+      if (val("pwNew").length < 10) return toast("Password too short", "Use at least 10 characters.", "error");
       if (val("pwNew") !== val("pwRepeat")) return toast("Passwords don't match", "Type the same new password in both boxes.", "error");
       const had = state.passwordSet;
       const next = await post("/api/auth/password", { current: val("pwCurrent"), password: val("pwNew") });
@@ -3008,7 +3043,7 @@ if (gateForm) {
       const email = String(document.getElementById("gateEmail").value || "").trim();
       const password = String(input.value || "");
       if (!email) return fail("Enter your email address.");
-      if (signup && password.length < 8) return fail("Use at least 8 characters for your password.");
+      if (signup && password.length < 10) return fail("Use at least 10 characters for your password.");
       if (signup && password !== document.getElementById("gateRepeat").value) return fail("The two passwords don't match.");
       const payload = { email, password };
       if (signup && ui.authInfo && ui.authInfo.legacy) {

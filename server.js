@@ -172,6 +172,7 @@ function serveStatic(req, res, pathname) {
     return res.end("Forbidden");
   }
   fs.stat(filePath, (err, stat) => {
+    if (!err && stat.isDirectory()) return serveStatic(req, res, rel.replace(/\/?$/, "/") + "index.html");
     if (err || !stat.isFile()) {
       // SPA fallback for unknown non-API paths.
       if (!path.extname(rel)) return serveStatic(req, res, "/index.html");
@@ -184,8 +185,14 @@ function serveStatic(req, res, pathname) {
       "Content-Type": type,
       "Content-Length": stat.size,
       // Revalidate every load so an upgrade never pairs new HTML with stale CSS/JS.
-      "Cache-Control": "no-cache"
+      "Cache-Control": "no-cache",
+      "X-Content-Type-Options": "nosniff",
+      "X-Frame-Options": "DENY"
     };
+    if (rel.startsWith("/admin/")) {
+      headers["Content-Security-Policy"] = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
+      headers["Cache-Control"] = "no-store";
+    }
     res.writeHead(200, headers);
     fs.createReadStream(filePath).pipe(res);
   });
@@ -200,6 +207,10 @@ const server = http.createServer(async (req, res) => {
   // Health check
   if (pathname === "/api/health") {
     return sendJSON(res, 200, { ok: true, mode: "local", now: Date.now() });
+  }
+
+  if (pathname.startsWith("/api/admin/")) {
+    return sendJSON(res, 404, { error: "The admin dashboard is part of the online version with accounts (Netlify). This computer copy has a single owner." });
   }
 
   // iPhone calendar / Shortcut reminder links carry their own secret key.

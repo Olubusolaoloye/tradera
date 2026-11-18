@@ -583,7 +583,7 @@ async function test(name, fn) {
   });
 
   await test("accounts: each account sees only its own journal", async () => {
-    const res = await call("POST", "/api/auth/signup", { email: "friend@example.com", password: "friend-pass-1" });
+    const res = await call("POST", "/api/auth/signup", { email: "friend@example.com", password: "maple-river-41" });
     assert.equal(res.status, 200);
     const friend = res.body.token;
     await call("POST", "/api/setups", { symbol: "USDJPY", direction: "long", entry: 150, label: "friend setup" }, friend);
@@ -603,7 +603,7 @@ async function test(name, fn) {
   });
 
   await test("accounts: an edit made during a price check is not overwritten", async () => {
-    const token = (await call("POST", "/api/auth/login", { email: "friend@example.com", password: "friend-pass-1" })).body.token;
+    const token = (await call("POST", "/api/auth/login", { email: "friend@example.com", password: "maple-river-41" })).body.token;
     let friendKey = null;
     for (const k of blobs.keys().filter(k => k.startsWith("accounts/db/"))) {
       const d = await blobs.get(k);
@@ -643,7 +643,7 @@ async function test(name, fn) {
     assert.equal(raw.statusCode, 200);
     assert.equal(raw.isBase64Encoded, true);
     assert.equal(Buffer.from(raw.body, "base64").toString(), "owner-shot");
-    const signup = await call("POST", "/api/auth/signup", { email: "other@example.com", password: "other-pass-1" });
+    const signup = await call("POST", "/api/auth/signup", { email: "other@example.com", password: "quiet-harbor-7" });
     const other = await acc({ httpMethod: "GET", path: "/api/images/" + up.body.id, headers: { "x-desk-key": signup.body.token } });
     assert.equal(other.statusCode, 404);
     const anon = await acc({ httpMethod: "GET", path: "/api/images/" + up.body.id, headers: {} });
@@ -697,11 +697,202 @@ async function test(name, fn) {
     const closed = createHandler({ accounts: true, blobs, signups: false });
     const res = await closed({ httpMethod: "POST", path: "/api/auth/signup", headers: {}, body: JSON.stringify({ email: "x@example.com", password: "xxxxxxxx1" }) });
     assert.equal(res.statusCode, 403);
-    const login = await call("POST", "/api/auth/login", { email: "friend@example.com", password: "friend-pass-1" });
+    const login = await call("POST", "/api/auth/login", { email: "friend@example.com", password: "maple-river-41" });
     assert.equal((await call("POST", "/api/auth/delete", { current: "wrong" }, login.body.token)).status, 400);
-    assert.equal((await call("POST", "/api/auth/delete", { current: "friend-pass-1" }, login.body.token)).status, 200);
-    assert.equal((await call("POST", "/api/auth/login", { email: "friend@example.com", password: "friend-pass-1" })).status, 401);
+    assert.equal((await call("POST", "/api/auth/delete", { current: "maple-river-41" }, login.body.token)).status, 200);
+    assert.equal((await call("POST", "/api/auth/login", { email: "friend@example.com", password: "maple-river-41" })).status, 401);
   });
+
+  // ------------------------------------------------------------ admin
+  console.log("\nAdmin and security");
+  const secu = require("../lib/security");
+  const ab = createMemoryBlobs();
+  const ah = createHandler({ accounts: true, blobs: ab });
+  let ipN = 0;
+  const areq = async (method, path, data, opts) => {
+    const o = opts || {};
+    const headers = { "x-nf-client-connection-ip": o.ip || "10.0.0.1" };
+    if (o.token) headers["x-desk-key"] = o.token;
+    if (o.admin) headers["x-admin-token"] = o.admin;
+    const res = await ah({ httpMethod: method, path, headers, body: data ? JSON.stringify(data) : undefined });
+    return { status: res.statusCode, body: JSON.parse(res.body || "{}"), headers: res.headers };
+  };
+  const ADMIN = "boss@example.com";
+  const APW = "granite-ladder-river-9";
+  let totpSecret = null;
+  // Each code may be used once, so move a fake clock 30 seconds on for every new code.
+  const realNow = Date.now;
+  let clockShift = 0;
+  Date.now = () => realNow() + clockShift;
+  const freshCode = () => { clockShift += 30000; return secu.totpAt(totpSecret, Math.floor(Date.now() / 30000)); };
+  let adminToken = null;
+  let recovery = null;
+
+  await test("security: weak and personal passwords are refused at sign-up", async () => {
+    assert.equal((await areq("POST", "/api/auth/signup", { email: "a1@example.com", password: "password123" }, { ip: "1.1.1.1" })).status, 400);
+    assert.equal((await areq("POST", "/api/auth/signup", { email: "carolina@example.com", password: "carolina-2026!" }, { ip: "1.1.1.1" })).status, 400);
+    assert.equal((await areq("POST", "/api/auth/signup", { email: "a1@example.com", password: "short1" }, { ip: "1.1.1.1" })).status, 400);
+  });
+
+  await test("security: 5 sign-ups per IP per hour", async () => {
+    for (let i = 0; i < 5; i++) {
+      const r = await areq("POST", "/api/auth/signup", { email: "spam" + i + "@example.com", password: "tidal-orchard-55" }, { ip: "6.6.6.6" });
+      assert.equal(r.status, 200, "signup " + i);
+    }
+    assert.equal((await areq("POST", "/api/auth/signup", { email: "spam9@example.com", password: "tidal-orchard-55" }, { ip: "6.6.6.6" })).status, 429);
+  });
+
+  await test("security: wrong passwords lock the email, same answer for unknown emails", async () => {
+    const a = await areq("POST", "/api/auth/login", { email: "spam0@example.com", password: "nope-nope-1" }, { ip: "7.7.7.1" });
+    const b = await areq("POST", "/api/auth/login", { email: "nobody-here@example.com", password: "nope-nope-1" }, { ip: "7.7.7.1" });
+    assert.equal(a.status, 401); assert.equal(b.status, 401);
+    assert.equal(a.body.error, b.body.error);
+    for (let i = 0; i < 4; i++) await areq("POST", "/api/auth/login", { email: "spam0@example.com", password: "nope-" + i }, { ip: "7.7.7." + (i + 2) });
+    // Locked even with the right password, from a fresh IP.
+    assert.equal((await areq("POST", "/api/auth/login", { email: "spam0@example.com", password: "tidal-orchard-55" }, { ip: "8.8.8.8" })).status, 429);
+  });
+
+  await test("security: password change limits wrong current-password guesses", async () => {
+    const tok = (await areq("POST", "/api/auth/login", { email: "spam1@example.com", password: "tidal-orchard-55" }, { ip: "9.9.9.9" })).body.token;
+    for (let i = 0; i < 4; i++) assert.equal((await areq("POST", "/api/auth/password", { current: "guess-" + i, password: "brand-new-pass-1" }, { token: tok })).status, 400);
+    assert.equal((await areq("POST", "/api/auth/password", { current: "guess-x", password: "brand-new-pass-1" }, { token: tok })).status, 429);
+    assert.equal((await areq("POST", "/api/auth/password", { current: "tidal-orchard-55", password: "brand-new-pass-1" }, { token: tok })).status, 429);
+  });
+
+  await test("admin: switched off until TRADERA_ADMIN_EMAILS is set", async () => {
+    delete process.env.TRADERA_ADMIN_EMAILS;
+    assert.equal((await areq("POST", "/api/admin/login", { email: ADMIN, password: APW })).status, 404);
+  });
+
+  await test("admin: two-step setup needs the owner's setup code", async () => {
+    process.env.TRADERA_ADMIN_EMAILS = ADMIN;
+    assert.equal((await areq("POST", "/api/auth/signup", { email: ADMIN, password: APW }, { ip: "2.2.2.2" })).status, 200);
+    let r = await areq("POST", "/api/admin/login", { email: ADMIN, password: APW }, { ip: "3.3.3.1" });
+    assert.equal(r.body.needsSetup, true);
+    assert.equal(r.body.setupAvailable, false);
+    assert.equal((await areq("POST", "/api/admin/setup", { step: "start", email: ADMIN, password: APW, setupCode: "x" }, { ip: "3.3.3.1" })).status, 403);
+    process.env.TRADERA_ADMIN_SETUP_CODE = "owner-only-setup-code-77";
+    r = await areq("POST", "/api/admin/setup", { step: "start", email: ADMIN, password: APW, setupCode: "wrong-code" }, { ip: "3.3.3.2" });
+    assert.equal(r.status, 401);
+    r = await areq("POST", "/api/admin/setup", { step: "start", email: ADMIN, password: APW, setupCode: "owner-only-setup-code-77" }, { ip: "3.3.3.3" });
+    assert.equal(r.status, 200);
+    assert.match(r.body.secret, /^[A-Z2-7]{32}$/);
+    assert.ok(r.body.uri.startsWith("otpauth://totp/"));
+    totpSecret = r.body.secret;
+    r = await areq("POST", "/api/admin/setup", { step: "confirm", email: ADMIN, password: APW, setupCode: "owner-only-setup-code-77", code: freshCode() }, { ip: "3.3.3.3" });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.recoveryCodes.length, 8);
+    recovery = r.body.recoveryCodes;
+    // The secret is never stored in plain text.
+    const raw = JSON.stringify(await ab.get("accounts/users/" + require("crypto").createHash("sha256").update(ADMIN).digest("hex").slice(0, 40) + ".json", { type: "json" }));
+    assert.ok(!raw.includes(totpSecret));
+    assert.ok(!raw.includes(recovery[0]));
+  });
+
+  await test("admin: sign-in needs password AND a fresh code; codes can't be replayed", async () => {
+    let r = await areq("POST", "/api/admin/login", { email: ADMIN, password: APW, code: "" }, { ip: "4.4.4.1" });
+    assert.equal(r.status, 401);
+    const code = freshCode();
+    r = await areq("POST", "/api/admin/login", { email: ADMIN, password: APW, code }, { ip: "4.4.4.2" });
+    assert.equal(r.status, 200);
+    adminToken = r.body.token;
+    r = await areq("POST", "/api/admin/login", { email: ADMIN, password: APW, code }, { ip: "4.4.4.3" });
+    assert.equal(r.status, 401, "same code twice");
+    // A normal app login token is not an admin token, and vice versa.
+    const appTok = (await areq("POST", "/api/auth/login", { email: ADMIN, password: APW }, { ip: "4.4.4.4" })).body.token;
+    assert.equal((await areq("GET", "/api/admin/overview", null, { admin: appTok })).status, 401);
+    assert.equal((await areq("GET", "/api/state", null, { token: adminToken })).status, 401);
+    assert.equal((await areq("GET", "/api/admin/overview", null, { admin: adminToken })).status, 200);
+  });
+
+  await test("admin: non-admins get the same answer and are locked after 3 tries", async () => {
+    const r1 = await areq("POST", "/api/admin/login", { email: "spam2@example.com", password: "tidal-orchard-55", code: "123456" }, { ip: "5.5.5.1" });
+    assert.equal(r1.status, 401);
+    assert.equal(r1.body.error, "Email, password or code is not correct.");
+    await areq("POST", "/api/admin/login", { email: "spam2@example.com", password: "x" }, { ip: "5.5.5.2" });
+    const r3 = await areq("POST", "/api/admin/login", { email: "spam2@example.com", password: "y" }, { ip: "5.5.5.3" });
+    assert.equal(r3.status, 429);
+  });
+
+  await test("admin: one recovery code works exactly once", async () => {
+    let r = await areq("POST", "/api/admin/login", { email: ADMIN, password: APW, code: recovery[0] }, { ip: "4.4.5.1" });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.recoveryLeft, 7);
+    r = await areq("POST", "/api/admin/login", { email: ADMIN, password: APW, code: recovery[0] }, { ip: "4.4.5.2" });
+    assert.equal(r.status, 401);
+    adminToken = (await areq("POST", "/api/admin/login", { email: ADMIN, password: APW, code: freshCode() }, { ip: "4.4.5.3" })).body.token;
+  });
+
+  await test("admin: feature switches and maintenance reach users", async () => {
+    const uTok = (await areq("POST", "/api/auth/login", { email: "spam3@example.com", password: "tidal-orchard-55" }, { ip: "11.0.0.1" })).body.token;
+    let r = await areq("POST", "/api/admin/config", { features: { pasteImport: false, signups: false }, announcement: "Hello traders" }, { admin: adminToken });
+    assert.equal(r.status, 200);
+    assert.equal((await areq("POST", "/api/setups/read", { text: "EURUSD buy 1.08" }, { token: uTok })).status, 403);
+    const st = await areq("GET", "/api/state", null, { token: uTok });
+    assert.equal(st.body.features.pasteImport, false);
+    assert.equal(st.body.announcement, "Hello traders");
+    assert.equal((await areq("GET", "/api/auth/status")).body.signups, false);
+    assert.equal((await areq("POST", "/api/auth/signup", { email: "late@example.com", password: "tidal-orchard-55" }, { ip: "12.0.0.1" })).status, 403);
+    r = await areq("POST", "/api/admin/config", { maintenance: { enabled: true, message: "Back at 2pm" } }, { admin: adminToken });
+    const down = await areq("GET", "/api/state", null, { token: uTok });
+    assert.equal(down.status, 503);
+    assert.equal(down.body.error, "Back at 2pm");
+    assert.equal((await areq("GET", "/api/auth/status")).body.maintenance.message, "Back at 2pm");
+    assert.equal((await areq("GET", "/api/admin/overview", null, { admin: adminToken })).status, 200, "admin still works");
+    await areq("POST", "/api/admin/config", { features: { pasteImport: true, signups: true }, maintenance: { enabled: false, message: "" }, announcement: "" }, { admin: adminToken });
+    assert.equal((await areq("GET", "/api/state", null, { token: uTok })).status, 200);
+  });
+
+  await test("admin: users can be made Pro, disabled and deleted (delete needs email + code)", async () => {
+    const list = (await areq("GET", "/api/admin/users", null, { admin: adminToken })).body.users;
+    const u = list.find(x => x.email === "spam4@example.com");
+    assert.ok(u && !("hash" in u) && !("salt" in u));
+    let r = await areq("POST", "/api/admin/users/action", { ek: u.ek, action: "plan", plan: "pro" }, { admin: adminToken });
+    assert.equal(r.body.user.plan, "pro");
+    const uTok = (await areq("POST", "/api/auth/login", { email: u.email, password: "tidal-orchard-55" }, { ip: "13.0.0.1" })).body.token;
+    assert.equal((await areq("GET", "/api/state", null, { token: uTok })).body.plan, "pro");
+    await areq("POST", "/api/admin/users/action", { ek: u.ek, action: "disable" }, { admin: adminToken });
+    assert.equal((await areq("GET", "/api/state", null, { token: uTok })).status, 401, "signed out");
+    assert.equal((await areq("POST", "/api/auth/login", { email: u.email, password: "tidal-orchard-55" }, { ip: "13.0.0.2" })).status, 403);
+    await areq("POST", "/api/admin/users/action", { ek: u.ek, action: "enable" }, { admin: adminToken });
+    assert.equal((await areq("POST", "/api/auth/login", { email: u.email, password: "tidal-orchard-55" }, { ip: "13.0.0.3" })).status, 200);
+    r = await areq("POST", "/api/admin/users/action", { ek: u.ek, action: "delete", confirmEmail: "wrong@example.com", code: freshCode() }, { admin: adminToken });
+    assert.equal(r.status, 400);
+    r = await areq("POST", "/api/admin/users/action", { ek: u.ek, action: "delete", confirmEmail: u.email, code: "000000" }, { admin: adminToken });
+    assert.equal(r.status, 401);
+    r = await areq("POST", "/api/admin/users/action", { ek: u.ek, action: "delete", confirmEmail: u.email, code: freshCode() }, { admin: adminToken });
+    assert.equal(r.status, 200);
+    assert.equal((await areq("POST", "/api/auth/login", { email: u.email, password: "tidal-orchard-55" }, { ip: "13.0.0.4" })).status, 401);
+    const me = list.find(x => x.email === ADMIN);
+    assert.equal((await areq("POST", "/api/admin/users/action", { ek: me.ek, action: "disable" }, { admin: adminToken })).status, 400);
+    const log = (await areq("GET", "/api/admin/audit", null, { admin: adminToken })).body.audit;
+    assert.ok(log.some(a => a.action === "delete-user" && a.target === u.email));
+    assert.ok(log.some(a => a.action === "login-failed"));
+  });
+
+  await test("admin: password change needs current password + code and ends old sessions", async () => {
+    const appTok = (await areq("POST", "/api/auth/login", { email: ADMIN, password: APW }, { ip: "14.0.0.1" })).body.token;
+    assert.equal((await areq("POST", "/api/auth/password", { current: APW, password: "another-long-pass-9" }, { token: appTok })).status, 403, "not from the app");
+    let r = await areq("POST", "/api/admin/password", { current: APW, password: "another-long-pass-9", code: "000000" }, { admin: adminToken });
+    assert.equal(r.status, 401);
+    r = await areq("POST", "/api/admin/password", { current: APW, password: "short-pass", code: freshCode() }, { admin: adminToken });
+    assert.equal(r.status, 400);
+    r = await areq("POST", "/api/admin/password", { current: APW, password: "another-long-pass-9", code: freshCode() }, { admin: adminToken });
+    assert.equal(r.status, 200);
+    const newAdmin = r.body.token;
+    assert.equal((await areq("GET", "/api/admin/overview", null, { admin: adminToken })).status, 401, "old admin session ended");
+    assert.equal((await areq("GET", "/api/state", null, { token: appTok })).status, 401, "app signed out");
+    assert.equal((await areq("GET", "/api/admin/overview", null, { admin: newAdmin })).status, 200);
+    assert.equal((await areq("POST", "/api/admin/logout", {}, { admin: newAdmin })).status, 200);
+    assert.equal((await areq("GET", "/api/admin/overview", null, { admin: newAdmin })).status, 401, "logged out");
+    // Removing the email from the admin list cuts access straight away.
+    const t2 = (await areq("POST", "/api/admin/login", { email: ADMIN, password: "another-long-pass-9", code: freshCode() }, { ip: "14.0.0.2" })).body.token;
+    process.env.TRADERA_ADMIN_EMAILS = "someone-else@example.com";
+    assert.equal((await areq("GET", "/api/admin/overview", null, { admin: t2 })).status, 401);
+    delete process.env.TRADERA_ADMIN_EMAILS;
+    delete process.env.TRADERA_ADMIN_SETUP_CODE;
+  });
+  Date.now = realNow;
 
   console.log("\n" + passed + " checks passed.\n");
 })();

@@ -1031,3 +1031,10 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--brass); 
 .log-prompt:first-of-type { border-top: 0; }
 .log-prompt-text { flex: 1 1 240px; font-size: 13.5px; }
 .log-prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Admin announcement and maintenance screen */
+.announce { margin: 0 0 16px; padding: 11px 14px; border-radius: 11px; background: var(--brass-soft); color: var(--brass); font-size: 13.5px; font-weight: 600; }
+.maintenance { position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; padding: 24px 16px; background: var(--bg); }
+.maintenance-card { max-width: 420px; text-align: center; padding: 28px 22px; border-radius: 16px; background: var(--surface); border: 1px solid var(--line); }
+.maintenance-card h2 { margin: 0 0 8px; font-size: 20px; }
+.maintenance-card p { color: var(--muted); margin: 0 0 18px; }

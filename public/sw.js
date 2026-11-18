@@ -10,7 +10,7 @@
    - Everything else (icons, fonts) is served from cache and refreshed behind
      the scenes. */
 
-const VERSION = "2.10.1";
+const VERSION = "2.11.0";
 const CACHE = "tradera-shell-" + VERSION;
 const SHELL = [
   "/",
@@ -89,6 +89,8 @@ self.addEventListener("fetch", function (event) {
   const fonts = url.hostname === "fonts.googleapis.com" || url.hostname === "fonts.gstatic.com";
   if (url.origin !== self.location.origin && !fonts) return;
   if (url.origin === self.location.origin && url.pathname.indexOf("/api/") === 0) return;
+  // The admin dashboard is never cached or served offline.
+  if (url.origin === self.location.origin && url.pathname.indexOf("/admin") === 0) return;
 
   if (request.mode === "navigate") {
     event.respondWith(pageRequest(request));

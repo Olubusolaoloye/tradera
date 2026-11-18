@@ -246,9 +246,46 @@ set, each user can paste their own app token instead.
 
 ## Pro accounts
 
-Until payments are added, give an account Pro by listing its email in the Netlify variable
-`TRADERA_PRO_EMAILS` (comma separated). Pro today: reading chart pictures with AI. Planned:
-real phone calls (Twilio).
+Until payments are added, give an account Pro from the admin dashboard (Users → Make Pro, or
+the Pro list), or by listing its email in the Netlify variable `TRADERA_PRO_EMAILS` (comma
+separated). Pro today: reading chart pictures with AI. Planned: real phone calls (Twilio).
+
+## Admin dashboard
+
+`https://<your-site>/admin/` (online version only). From there you can switch features on and off
+for everyone, close the app for maintenance, show an announcement banner, manage the Pro list,
+make accounts Pro, sign people out, disable or delete accounts, and read the activity log.
+
+**Set it up once (Netlify → Site configuration → Environment variables), then redeploy:**
+
+1. `TRADERA_ADMIN_EMAILS`: the email(s) of the admin accounts, comma separated. Sign up in the
+   app with that email first.
+2. `TRADERA_ADMIN_SETUP_CODE`: a long random secret you make up (12+ characters). It is needed
+   only when an admin turns on two-step sign-in, so a stolen password alone can't.
+3. Open `/admin/`, sign in with the email and password, enter the setup code, add Tradera to an
+   authenticator app (Google Authenticator, Authy, 1Password…), type its code, and save the 8
+   recovery codes.
+
+**How it is protected**
+
+- Admin sign-in needs the password **and** a 6-digit code (or a one-time recovery code); a code
+  can't be used twice. The 2-step secret is stored encrypted; recovery codes only as hashes.
+- 3 wrong admin attempts lock that email for 15 minutes (doubling up to a day); 5 from one IP lock
+  the IP. Every attempt, success and change is in the activity log with the IP.
+- Admin sessions are separate from app logins, last 2 hours (15 minutes idle), live only in that
+  browser tab, are sent in a header (not a cookie), and end on sign-out, password change, or
+  removal from `TRADERA_ADMIN_EMAILS`.
+- Admin passwords (12+ characters) can only be changed in the dashboard, with the current
+  password and a fresh code; that signs the account out everywhere. Deleting a user needs their
+  email typed and a fresh code. Admins can't be disabled or deleted from the dashboard.
+- The page allows only its own scripts and styles (strict Content-Security-Policy), can't be framed,
+  is never cached or listed by search engines, and isn't stored by the app's offline cache.
+
+**App logins are hardened too:** wrong passwords are limited per email (5 → lockout, growing) and per
+IP (20 across all accounts), stored so the limits hold on every server; unknown emails get the same
+answer; at most 5 sign-ups per IP per hour; new passwords need 10+ characters and can't be common
+ones or contain the email; wrong "current password" tries when changing a password or deleting an
+account are limited; and disabled accounts are signed out at once.
 
 ## Chart check reminders
 
