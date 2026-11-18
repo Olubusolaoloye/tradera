@@ -764,14 +764,17 @@ async function test(name, fn) {
     assert.equal((await areq("POST", "/api/admin/login", { email: ADMIN, password: APW })).status, 404);
   });
 
-  await test("admin: two-step setup needs the owner's setup code", async () => {
+  await test("admin: two-step setup works without a setup code, and checks it when one is set", async () => {
     process.env.TRADERA_ADMIN_EMAILS = ADMIN;
     assert.equal((await areq("POST", "/api/auth/signup", { email: ADMIN, password: APW }, { ip: "2.2.2.2" })).status, 200);
     let r = await areq("POST", "/api/admin/login", { email: ADMIN, password: APW }, { ip: "3.3.3.1" });
     assert.equal(r.body.needsSetup, true);
-    assert.equal(r.body.setupAvailable, false);
-    assert.equal((await areq("POST", "/api/admin/setup", { step: "start", email: ADMIN, password: APW, setupCode: "x" }, { ip: "3.3.3.1" })).status, 403);
+    assert.equal(r.body.needsSetupCode, false);
+    r = await areq("POST", "/api/admin/setup", { step: "start", email: ADMIN, password: APW }, { ip: "3.3.3.1" });
+    assert.equal(r.status, 200, "no code needed when none is set");
+    assert.equal((await areq("POST", "/api/admin/setup", { step: "start", email: ADMIN, password: "wrong-password-1" }, { ip: "3.3.3.1" })).status, 401);
     process.env.TRADERA_ADMIN_SETUP_CODE = "owner-only-setup-code-77";
+    assert.equal((await areq("POST", "/api/admin/login", { email: ADMIN, password: APW }, { ip: "3.3.3.4" })).body.needsSetupCode, true);
     r = await areq("POST", "/api/admin/setup", { step: "start", email: ADMIN, password: APW, setupCode: "wrong-code" }, { ip: "3.3.3.2" });
     assert.equal(r.status, 401);
     r = await areq("POST", "/api/admin/setup", { step: "start", email: ADMIN, password: APW, setupCode: "owner-only-setup-code-77" }, { ip: "3.3.3.3" });

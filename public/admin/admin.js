@@ -134,7 +134,7 @@
       try {
         const r = await api("/api/admin/login", { method: "POST", body: { email: email.value, password: pw.value, code: code.value } });
         if (r.needsSetup) {
-          renderSetup(email.value, pw.value, r.setupAvailable);
+          renderSetup(email.value, pw.value, r.needsSetupCode);
           return;
         }
         save({ token: r.token, expiresAt: r.expiresAt, email: r.email });
@@ -156,15 +156,23 @@
     email.focus();
   }
 
-  function renderSetup(email, password, available) {
+  function renderSetup(email, password, needsCode) {
     clear(root);
     const card = h("div", { class: "auth-card" });
     root.appendChild(h("div", { class: "auth" }, card));
     card.appendChild(brand("Two-step sign-in"));
     card.appendChild(h("h1", { text: "Set up two-step sign-in" }));
-    if (!available) {
-      card.appendChild(msg("error", "Admin setup is closed. Add TRADERA_ADMIN_SETUP_CODE (12+ random characters) to the site's environment variables on Netlify, redeploy, then sign in again."));
-      card.appendChild(h("button", { class: "btn block", type: "button", text: "Back to sign-in", onclick: function () { renderLogin(); } }));
+    if (!needsCode) {
+      // No setup code on this site: go straight to connecting the app.
+      card.appendChild(h("p", { class: "muted small", text: "Preparing your authenticator key…" }));
+      api("/api/admin/setup", { method: "POST", body: { step: "start", email: email, password: password } })
+        .then(function (r) { showSecret(card, email, password, "", r); })
+        .catch(function (err) {
+          if (err.message === "signed-out") return;
+          clear(card);
+          card.appendChild(msg("error", err.message));
+          card.appendChild(h("button", { class: "btn block", type: "button", text: "Back to sign-in", onclick: function () { renderLogin(); } }));
+        });
       return;
     }
     card.appendChild(h("p", { class: "muted small", text: "Admins need a code from an authenticator app (Google Authenticator, Authy, 1Password, Microsoft Authenticator…) as well as their password. Enter the setup code you saved on Netlify to begin." }));

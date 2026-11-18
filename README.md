@@ -260,11 +260,12 @@ make accounts Pro, sign people out, disable or delete accounts, and read the act
 
 1. `TRADERA_ADMIN_EMAILS`: the email(s) of the admin accounts, comma separated. Sign up in the
    app with that email first.
-2. `TRADERA_ADMIN_SETUP_CODE`: a long random secret you make up (12+ characters). It is needed
-   only when an admin turns on two-step sign-in, so a stolen password alone can't.
-3. Open `/admin/`, sign in with the email and password, enter the setup code, add Tradera to an
-   authenticator app (Google Authenticator, Authy, 1Password…), type its code, and save the 8
-   recovery codes.
+2. Optional, `TRADERA_ADMIN_SETUP_CODE`: a long random secret you make up. When set, it is also
+   asked for the first time an admin connects an authenticator app, so a stolen password alone
+   can't connect a different phone. Without it, the password is enough for that first step, so
+   connect your phone straight away.
+3. Open `/admin/`, sign in with the email and password, add Tradera to an authenticator app
+   (Google Authenticator, Authy, 1Password…), type its code, and save the 8 recovery codes.
 
 **How it is protected**
 
