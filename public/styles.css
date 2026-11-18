@@ -1311,3 +1311,174 @@ input:focus, select:focus, textarea:focus { border-color: var(--brass); box-shad
 .log-prompt { padding: 12px 20px; }
 .log-prompts .panel-head { padding-bottom: 6px; }
 .hero-balance b { font-weight: 500; }
+
+/* =====================================================================
+   Tradera 3.1 — "graphite & champagne"
+   A private-desk finish: neutral graphite glass, platinum type, and a
+   single champagne accent used sparingly. No multi-colour gradients.
+   ===================================================================== */
+:root {
+  --bg: #0A0B0D;
+  --bg-glow: rgba(205, 178, 124, .06);
+  --surface: rgba(24, 26, 30, .62);
+  --surface-2: rgba(34, 37, 43, .68);
+  --surface-3: rgba(48, 52, 60, .74);
+  --sunken: rgba(8, 9, 11, .58);
+  --line: rgba(255, 255, 255, .07);
+  --line-strong: rgba(255, 255, 255, .13);
+  --hover: rgba(255, 255, 255, .045);
+  --text: #F2F1EE;
+  --muted: #A3A6AD;
+  --faint: #6C7079;
+  --brass: #CDB27C;
+  --brass-strong: #E4CF9F;
+  --brass-ink: #17130A;
+  --brass-soft: rgba(205, 178, 124, .13);
+  --violet: #9AA3B2;
+  --violet-soft: rgba(154, 163, 178, .10);
+  --up: #3FD49B;
+  --up-soft: rgba(63, 212, 155, .12);
+  --down: #F2647A;
+  --down-soft: rgba(242, 100, 122, .12);
+  --near: #E9A54A;
+  --near-soft: rgba(233, 165, 74, .13);
+  --info: #8FA9D6;
+  --info-soft: rgba(143, 169, 214, .12);
+  --shadow: 0 1px 0 rgba(255, 255, 255, .045) inset, 0 18px 44px rgba(0, 0, 0, .38);
+  --shadow-lg: 0 1px 0 rgba(255, 255, 255, .05) inset, 0 40px 100px rgba(0, 0, 0, .6);
+  --backdrop: rgba(4, 5, 6, .62);
+  --glass-blur: saturate(130%) blur(20px);
+  --glass-edge: linear-gradient(165deg, rgba(255, 255, 255, .17), rgba(255, 255, 255, .045) 38%, rgba(255, 255, 255, .015) 75%);
+  --grid-line: rgba(255, 255, 255, .028);
+  --aurora-a: rgba(205, 178, 124, .075);
+  --aurora-b: rgba(140, 155, 180, .07);
+  --aurora-c: rgba(255, 255, 255, .02);
+  --solid: #16181C;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #EDEFF2;
+    --bg-glow: rgba(156, 122, 60, .06);
+    --surface: rgba(255, 255, 255, .66);
+    --surface-2: rgba(255, 255, 255, .78);
+    --surface-3: rgba(236, 238, 242, .92);
+    --sunken: rgba(240, 242, 245, .8);
+    --line: rgba(20, 24, 32, .09);
+    --line-strong: rgba(20, 24, 32, .16);
+    --hover: rgba(20, 24, 32, .04);
+    --text: #14161B;
+    --muted: #555B66;
+    --faint: #8A909B;
+    --brass: #9C7A3C;
+    --brass-strong: #B8924B;
+    --brass-ink: #FFFFFF;
+    --brass-soft: rgba(156, 122, 60, .11);
+    --violet: #6E7686;
+    --violet-soft: rgba(110, 118, 134, .09);
+    --up: #0E8F62;
+    --up-soft: rgba(14, 143, 98, .10);
+    --down: #C9354B;
+    --down-soft: rgba(201, 53, 75, .09);
+    --near: #B86A12;
+    --near-soft: rgba(184, 106, 18, .10);
+    --info: #3F5F99;
+    --info-soft: rgba(63, 95, 153, .09);
+    --shadow: 0 1px 0 rgba(255, 255, 255, .85) inset, 0 12px 32px rgba(20, 24, 32, .08);
+    --shadow-lg: 0 1px 0 rgba(255, 255, 255, .9) inset, 0 30px 80px rgba(20, 24, 32, .18);
+    --backdrop: rgba(20, 24, 32, .32);
+    --glass-edge: linear-gradient(165deg, rgba(255, 255, 255, .95), rgba(255, 255, 255, .35) 45%, rgba(20, 24, 32, .06));
+    --grid-line: rgba(20, 24, 32, .04);
+    --aurora-a: rgba(184, 146, 75, .10);
+    --aurora-b: rgba(110, 125, 150, .08);
+    --aurora-c: rgba(255, 255, 255, .3);
+    --solid: #FFFFFF;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #EDEFF2;
+  --bg-glow: rgba(156, 122, 60, .06);
+  --surface: rgba(255, 255, 255, .66);
+  --surface-2: rgba(255, 255, 255, .78);
+  --surface-3: rgba(236, 238, 242, .92);
+  --sunken: rgba(240, 242, 245, .8);
+  --line: rgba(20, 24, 32, .09);
+  --line-strong: rgba(20, 24, 32, .16);
+  --hover: rgba(20, 24, 32, .04);
+  --text: #14161B;
+  --muted: #555B66;
+  --faint: #8A909B;
+  --brass: #9C7A3C;
+  --brass-strong: #B8924B;
+  --brass-ink: #FFFFFF;
+  --brass-soft: rgba(156, 122, 60, .11);
+  --violet: #6E7686;
+  --violet-soft: rgba(110, 118, 134, .09);
+  --up: #0E8F62;
+  --up-soft: rgba(14, 143, 98, .10);
+  --down: #C9354B;
+  --down-soft: rgba(201, 53, 75, .09);
+  --near: #B86A12;
+  --near-soft: rgba(184, 106, 18, .10);
+  --info: #3F5F99;
+  --info-soft: rgba(63, 95, 153, .09);
+  --shadow: 0 1px 0 rgba(255, 255, 255, .85) inset, 0 12px 32px rgba(20, 24, 32, .08);
+  --shadow-lg: 0 1px 0 rgba(255, 255, 255, .9) inset, 0 30px 80px rgba(20, 24, 32, .18);
+  --backdrop: rgba(20, 24, 32, .32);
+  --glass-edge: linear-gradient(165deg, rgba(255, 255, 255, .95), rgba(255, 255, 255, .35) 45%, rgba(20, 24, 32, .06));
+  --grid-line: rgba(20, 24, 32, .04);
+  --aurora-a: rgba(184, 146, 75, .10);
+  --aurora-b: rgba(110, 125, 150, .08);
+  --aurora-c: rgba(255, 255, 255, .3);
+  --solid: #FFFFFF;
+  color-scheme: light;
+}
+
+/* background: quieter, slower, warm light from the top right */
+body::before { animation-duration: 90s; }
+
+/* one accent, used with restraint */
+.hero::before { background: radial-gradient(560px 260px at 100% 0%, var(--brass-soft), transparent 72%); }
+.hero-line .sym { color: var(--brass); background: none; -webkit-background-clip: border-box; background-clip: border-box; }
+.nav button.active { background: var(--hover); box-shadow: inset 0 0 0 1px var(--line); }
+.nav button.active svg { color: var(--brass); }
+.nav button.active::before { background: var(--brass); box-shadow: none; }
+.meter b { background: var(--brass); box-shadow: none; }
+.toast.alert::after { background: var(--brass); }
+
+/* buttons: a single-hue metallic sheen, crisp edge, gentle lift */
+.btn.primary {
+  background: linear-gradient(180deg, var(--brass-strong) 0%, var(--brass) 100%);
+  color: var(--brass-ink); border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .45), inset 0 -1px 0 rgba(0, 0, 0, .18), 0 6px 18px -8px rgba(0, 0, 0, .6);
+  letter-spacing: .01em;
+}
+.btn.primary:hover { filter: brightness(1.05); transform: translateY(-1px); }
+.btn.primary:active { transform: translateY(0); }
+.btn:hover { border-color: var(--line-strong); }
+.btn { font-weight: 600; }
+
+/* inputs: precise, no neon */
+input:focus, select:focus, textarea:focus { border-color: var(--brass); box-shadow: 0 0 0 3px var(--brass-soft); }
+
+/* setup states: calm signals instead of glow */
+.setup-card.approaching { box-shadow: 0 0 0 1px color-mix(in srgb, var(--near) 70%, transparent), 0 14px 34px -14px var(--near), var(--shadow); }
+.setup-card.at-entry { box-shadow: 0 0 0 1px var(--brass), 0 14px 34px -14px var(--brass), var(--shadow); }
+.state-dot.on::before { box-shadow: 0 0 0 3px var(--up-soft); }
+.nav-dot { box-shadow: 0 0 0 3px var(--near-soft); }
+
+/* typography: tighter, more editorial headings; quiet numerals */
+.topbar-copy h1 { font-weight: 600; letter-spacing: -1.1px; }
+.hero-line { font-weight: 600; letter-spacing: -1.3px; }
+.section-title h2, .panel-head h2, .panel-head h3 { letter-spacing: -.35px; }
+.hero-balance b { font-weight: 400; letter-spacing: -.04em; }
+.hero-balance span, .panel-head .hint { letter-spacing: .01em; }
+
+/* brand tile: graphite with a champagne mark */
+.brand-mark { background: linear-gradient(160deg, #22252B, #111316); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .10), 0 6px 18px rgba(0, 0, 0, .35); }
+
+/* phone tab bar */
+@media (max-width: 900px) {
+  .tabbar button.active { background: var(--hover); box-shadow: inset 0 0 0 1px var(--line); }
+}

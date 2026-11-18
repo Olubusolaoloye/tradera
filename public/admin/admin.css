@@ -272,3 +272,70 @@ input:focus, textarea:focus { outline: none; border-color: var(--brass); box-sha
 
 /* let the fixed aurora layers show through (html carries the base colour) */
 body { background: transparent; }
+
+/* ===== graphite & champagne (matches the app) ===== */
+:root {
+  --bg: #0A0B0D;
+  --surface: rgba(24, 26, 30, .64);
+  --sunken: rgba(8, 9, 11, .58);
+  --line: rgba(255, 255, 255, .09);
+  --text: #F2F1EE;
+  --muted: #A3A6AD;
+  --brass: #CDB27C;
+  --brass-strong: #E4CF9F;
+  --violet: #9AA3B2;
+  --brass-soft: rgba(205, 178, 124, .13);
+  --violet-soft: rgba(154, 163, 178, .10);
+  --up: #3FD49B;
+  --up-soft: rgba(63, 212, 155, .12);
+  --down: #F2647A;
+  --down-soft: rgba(242, 100, 122, .12);
+  --focus: #CDB27C;
+  --ink: #17130A;
+  --solid: #16181C;
+  --grid-line: rgba(255, 255, 255, .028);
+  --aurora-a: rgba(205, 178, 124, .075);
+  --aurora-b: rgba(140, 155, 180, .07);
+  --edge: linear-gradient(165deg, rgba(255, 255, 255, .17), rgba(255, 255, 255, .045) 38%, rgba(255, 255, 255, .015) 75%);
+  --blur: saturate(130%) blur(20px);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #EDEFF2;
+    --surface: rgba(255, 255, 255, .68);
+    --sunken: rgba(240, 242, 245, .82);
+    --line: rgba(20, 24, 32, .10);
+    --text: #14161B;
+    --muted: #555B66;
+    --brass: #9C7A3C;
+    --brass-strong: #B8924B;
+    --violet: #6E7686;
+    --brass-soft: rgba(156, 122, 60, .11);
+    --violet-soft: rgba(110, 118, 134, .09);
+    --up: #0E8F62;
+    --up-soft: rgba(14, 143, 98, .10);
+    --down: #C9354B;
+    --down-soft: rgba(201, 53, 75, .09);
+    --focus: #9C7A3C;
+    --ink: #FFFFFF;
+    --solid: #FFFFFF;
+    --grid-line: rgba(20, 24, 32, .04);
+    --aurora-a: rgba(184, 146, 75, .10);
+    --aurora-b: rgba(110, 125, 150, .08);
+    --edge: linear-gradient(165deg, rgba(255, 255, 255, .95), rgba(255, 255, 255, .35) 45%, rgba(20, 24, 32, .06));
+  }
+}
+.brand-mark { background: linear-gradient(160deg, #22252B, #111316); color: var(--brass); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .10), 0 6px 18px rgba(0, 0, 0, .3); }
+.btn.primary {
+  background: linear-gradient(180deg, var(--brass-strong), var(--brass));
+  color: var(--ink); border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .45), inset 0 -1px 0 rgba(0, 0, 0, .18), 0 6px 18px -8px rgba(0, 0, 0, .6);
+}
+.btn:hover { border-color: rgba(127, 127, 127, .35); }
+input:focus, textarea:focus { border-color: var(--brass); box-shadow: 0 0 0 3px var(--brass-soft); }
+.tab.active { background: none; box-shadow: inset 0 -2px 0 var(--brass); }
+.pill.on { box-shadow: none; }
+.pill.pro { background: var(--brass-soft); color: var(--brass); }
+.switch input:checked + i { background: var(--brass); box-shadow: none; }
+.btn.danger.solid { box-shadow: none; }
+.stat b { font-weight: 500; }
