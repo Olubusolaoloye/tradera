@@ -138,3 +138,137 @@ dialog::backdrop { background: rgba(0,0,0,.45); }
   .audit-row { grid-template-columns: 1fr; }
   .who { display: none; }
 }
+
+/* =====================================================================
+   Admin — same "terminal under glass" look as the app. System fonts only:
+   the admin page's security policy loads nothing from other sites.
+   ===================================================================== */
+:root {
+  --bg: #060914;
+  --surface: rgba(17, 23, 42, .6);
+  --sunken: rgba(5, 8, 18, .55);
+  --line: rgba(160, 190, 255, .12);
+  --text: #EAF0FF;
+  --muted: #9AA6C4;
+  --brass: #3EE6FF;
+  --violet: #8B7CFF;
+  --brass-soft: rgba(62, 230, 255, .14);
+  --violet-soft: rgba(139, 124, 255, .16);
+  --up: #2EF2A6;
+  --up-soft: rgba(46, 242, 166, .13);
+  --down: #FF5D7E;
+  --down-soft: rgba(255, 93, 126, .14);
+  --focus: #3EE6FF;
+  --ink: #04111C;
+  --solid: #121830;
+  --grid-line: rgba(130, 170, 255, .055);
+  --aurora-a: rgba(62, 230, 255, .18);
+  --aurora-b: rgba(139, 124, 255, .20);
+  --edge: linear-gradient(140deg, rgba(150, 220, 255, .28), rgba(139, 124, 255, .10) 40%, rgba(255, 255, 255, .02) 70%);
+  --blur: saturate(160%) blur(18px);
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #E9EEF8;
+    --surface: rgba(255, 255, 255, .64);
+    --sunken: rgba(236, 241, 251, .8);
+    --line: rgba(40, 60, 120, .12);
+    --text: #0D1428;
+    --muted: #4E5A78;
+    --brass: #0A84C6;
+    --violet: #5B4BFF;
+    --brass-soft: rgba(10, 132, 198, .12);
+    --violet-soft: rgba(91, 75, 255, .10);
+    --up: #0B9E6C;
+    --up-soft: rgba(11, 158, 108, .11);
+    --down: #D9364F;
+    --down-soft: rgba(217, 54, 79, .10);
+    --focus: #0A84C6;
+    --ink: #FFFFFF;
+    --solid: #FFFFFF;
+    --grid-line: rgba(40, 70, 150, .06);
+    --aurora-a: rgba(25, 167, 232, .18);
+    --aurora-b: rgba(91, 75, 255, .14);
+    --edge: linear-gradient(140deg, rgba(255, 255, 255, .95), rgba(160, 180, 255, .25) 45%, rgba(255, 255, 255, .4));
+    color-scheme: light;
+  }
+}
+
+html, body { background: var(--bg); }
+body { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", Roboto, sans-serif; letter-spacing: -.005em; }
+body::before, body::after { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: -1; }
+body::before {
+  background:
+    radial-gradient(44vw 36vw at 90% -8%, var(--aurora-a), transparent 70%),
+    radial-gradient(46vw 40vw at -10% 40%, var(--aurora-b), transparent 70%);
+}
+body::after {
+  background-image: linear-gradient(var(--grid-line) 1px, transparent 1px), linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 44px 44px;
+  -webkit-mask-image: radial-gradient(120% 80% at 50% 0%, #000 30%, transparent 85%);
+  mask-image: radial-gradient(120% 80% at 50% 0%, #000 30%, transparent 85%);
+}
+
+/* glass */
+.auth-card, .panel, .stat, .top, dialog {
+  background: var(--surface);
+  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+}
+.auth-card, .panel, .stat { position: relative; isolation: isolate; border-color: transparent; }
+.auth-card::after, .panel::after, .stat::after {
+  content: ""; position: absolute; inset: 0; border-radius: inherit; padding: 1px; pointer-events: none;
+  background: var(--edge);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+}
+.auth-card { border-radius: 24px; box-shadow: 0 40px 110px rgba(0, 0, 0, .45); }
+.panel { border-radius: 20px; box-shadow: 0 20px 50px rgba(0, 0, 0, .25); }
+.stat { border-radius: 16px; }
+.top { background: color-mix(in srgb, var(--bg) 60%, transparent); border-bottom-color: var(--line); }
+dialog { background: color-mix(in srgb, var(--solid) 86%, transparent); border-color: var(--line); border-radius: 22px; }
+dialog::backdrop { background: rgba(3, 5, 12, .55); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+
+/* type: numbers read like a terminal */
+h1, h2 { letter-spacing: -.02em; }
+.stat b { font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace; font-weight: 600; letter-spacing: -.03em; font-feature-settings: "tnum" 1, "zero" 1; }
+.secret, .codes code, .code-input { font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace; }
+
+/* brand */
+.brand-mark { background: linear-gradient(135deg, var(--brass), var(--violet)); color: var(--ink); box-shadow: 0 0 22px var(--brass-soft); }
+
+/* buttons */
+.btn { background: color-mix(in srgb, var(--surface) 80%, transparent); border-color: var(--line); border-radius: 12px; }
+.btn:hover { border-color: color-mix(in srgb, var(--brass) 45%, var(--line)); }
+.btn.primary {
+  background: linear-gradient(110deg, var(--brass), color-mix(in srgb, var(--brass) 50%, var(--violet)) 55%, var(--violet));
+  color: var(--ink); border-color: transparent;
+  box-shadow: 0 8px 24px -8px var(--brass), inset 0 1px 0 rgba(255, 255, 255, .35);
+}
+.btn.danger.solid { box-shadow: 0 8px 24px -8px var(--down); }
+
+/* inputs */
+input[type=text], input[type=email], input[type=password], input[type=search], textarea {
+  background: var(--sunken); border-color: var(--line); border-radius: 12px;
+}
+input:focus, textarea:focus { outline: none; border-color: var(--brass); box-shadow: 0 0 0 3px var(--brass-soft), 0 0 18px -4px var(--brass); }
+
+/* tabs */
+.tab { border-radius: 10px 10px 0 0; }
+.tab.active { color: var(--text); border-bottom-color: transparent; background: linear-gradient(180deg, transparent 60%, var(--brass-soft)); box-shadow: inset 0 -2px 0 var(--brass); }
+
+/* pills and switches glow a little */
+.pill.on { box-shadow: 0 0 12px -4px var(--up); }
+.pill.pro { background: linear-gradient(90deg, var(--brass-soft), var(--violet-soft)); color: var(--brass); }
+.switch i { background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); }
+.switch input:checked + i { background: linear-gradient(90deg, var(--brass), var(--violet)); box-shadow: 0 0 16px -4px var(--brass); }
+.dirty-bar { background: color-mix(in srgb, var(--solid) 86%, transparent); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); border-color: var(--brass); border-radius: 16px; }
+.msg.info { background: var(--brass-soft); color: var(--brass); }
+
+@media (prefers-reduced-transparency: reduce) {
+  :root { --surface: var(--solid); }
+  .auth-card, .panel, .stat, .top, dialog, .dirty-bar { -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
+/* let the fixed aurora layers show through (html carries the base colour) */
+body { background: transparent; }
