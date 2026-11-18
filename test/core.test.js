@@ -251,6 +251,68 @@ async function test(name, fn) {
     assert.equal(d.state().setups.length, 2);
   });
 
+  await test("setups that hit stop or target are finished and ask to be logged", async () => {
+    const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
+    await d.load();
+    await d.handle("POST", "/api/settings", { feed: "demo" });
+    await d.handle("POST", "/api/setups", { symbol: "EURUSD", direction: "long", entry: 1.08, stop: 1.077, target: 1.086 });
+    await d.handle("POST", "/api/setups", { symbol: "GBPUSD", direction: "short", entry: 1.27, stop: 1.274, target: 1.262 });
+    const [a, b] = d.state().setups;
+    const tick = async (sym, price) => { d._setQuote(sym, price); await d._evaluate(); };
+    await tick("EURUSD", 1.0799);          // entry fills
+    assert.ok(d.state().setups.find(x => x.id === a.id).entryHitAt);
+    await tick("EURUSD", 1.0862);          // target
+    let sa = d.state().setups.find(x => x.id === a.id);
+    assert.equal(sa.outcome.result, "tp");
+    assert.equal(sa.outcome.r, 2);
+    assert.equal(sa.status, "done");
+    assert.equal(sa.logPrompt, true);
+    assert.equal(d.state().alerts[0].kind, "outcome");
+    await tick("GBPUSD", 1.261);           // target hit before the sell entry filled
+    const sb = d.state().setups.find(x => x.id === b.id);
+    assert.equal(sb.outcome.result, "missed");
+    assert.equal(sb.status, "invalidated");
+    assert.ok(!sb.logPrompt);
+    // Logging a trade from the setup answers the prompt.
+    await d.handle("POST", "/api/trades", { symbol: "EURUSD", direction: "long", entry: 1.08, stop: 1.077, exit: 1.086, status: "closed", setupId: a.id });
+    sa = d.state().setups.find(x => x.id === a.id);
+    assert.equal(sa.logPrompt, false);
+    assert.ok(sa.loggedTradeId);
+    // "Not taken" also clears it; back to watching resets the result.
+    await d.handle("POST", "/api/setups", { symbol: "XAUUSD", direction: "short", entry: 2400, stop: 2410, target: 2380 });
+    const c = d.state().setups.find(x => x.symbol === "XAUUSD");
+    await tick("XAUUSD", 2401); await tick("XAUUSD", 2411);
+    assert.equal(d.state().setups.find(x => x.id === c.id).outcome.result, "sl");
+    await d.handle("POST", "/api/setups/" + c.id + "/skip-log", {});
+    assert.equal(d.state().setups.find(x => x.id === c.id).logPrompt, false);
+    await d.handle("POST", "/api/setups/" + c.id + "/status", { status: "watching" });
+    const back = d.state().setups.find(x => x.id === c.id);
+    assert.equal(back.outcome, undefined);
+    assert.equal(back.status, "watching");
+  });
+
+  await test("Pushover: emergency alarm for entries, key is checked", async () => {
+    const sent = [];
+    const realFetch = global.fetch;
+    global.fetch = async (url, init) => { sent.push({ url: String(url), body: String(init && init.body || "") }); return new Response(JSON.stringify({ status: 1 }), { status: 200 }); };
+    try {
+      const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
+      await d.load();
+      let res = await d.handle("POST", "/api/settings", { pushoverUser: "short" });
+      assert.equal(res.status, 400);
+      res = await d.handle("POST", "/api/settings", { pushoverUser: "u".repeat(30), pushoverToken: "a".repeat(30) });
+      assert.equal(res.status, 200);
+      res = await d.handle("POST", "/api/test-alert", {});
+      assert.equal(res.status, 200);
+      const push = sent.filter(x => x.url.includes("pushover"));
+      assert.equal(push.length, 1);
+      const form = new URLSearchParams(push[0].body);
+      assert.equal(form.get("priority"), "2");
+      assert.equal(form.get("retry"), "30");
+      assert.equal(form.get("user"), "u".repeat(30));
+    } finally { global.fetch = realFetch; }
+  });
+
   await test("bulk add skips duplicates", async () => {
     const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
     await d.load();
@@ -612,6 +674,23 @@ async function test(name, fn) {
     assert.equal((await h(ev)).statusCode, 200);
     assert.equal((await h(ev)).statusCode, 200);
     assert.equal(opened, 2);
+  });
+
+  await test("accounts: reading chart pictures with AI is Pro only", async () => {
+    const tok = (await call("POST", "/api/auth/login", { email: "owner@example.com", password: "newer-password-2" })).body.token;
+    const img = "data:image/png;base64,iVBORw0KGgo=";
+    let res = await call("POST", "/api/setups/read", { image: img }, tok);
+    assert.equal(res.status, 402);
+    assert.equal(res.body.pro, true);
+    res = await call("POST", "/api/setups/read", { text: "EURUSD buy 1.08 sl 1.07 tp 1.1" }, tok);
+    assert.equal(res.status, 200);
+    process.env.TRADERA_PRO_EMAILS = "someone@else.com, OWNER@example.com";
+    try {
+      res = await call("POST", "/api/setups/read", { image: img }, tok);
+      assert.notEqual(res.status, 402);
+      const st = await call("GET", "/api/state", null, tok);
+      assert.equal(st.body.plan, "pro");
+    } finally { delete process.env.TRADERA_PRO_EMAILS; }
   });
 
   await test("accounts: closed sign-ups and account deletion", async () => {

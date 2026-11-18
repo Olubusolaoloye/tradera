@@ -661,7 +661,7 @@ function renderDashboard() {
     : "";
   const balance = (Number(s.startingBalance) || 0) + (Number(s.netPnl) || 0);
 
-  return feedError + feedWarn +
+  return feedError + feedWarn + logPromptsPanel() +
     '<section class="hero">' +
       "<div>" +
         '<p class="hero-greet">' + greeting() + ".</p>" +
@@ -909,6 +909,37 @@ function journalFoot(rows) {
 
 /* ------------------------------------------------------------------ setups */
 
+/** Finished setups the user hasn't logged or dismissed yet. */
+function unloggedSetup(s) {
+  if (s.status === "watching" || s.notTaken) return false;
+  if (s.outcome && s.outcome.result === "missed") return false;
+  return !state.trades.some(t => t.setupId === s.id);
+}
+function outcomeTag(s) {
+  const o = s.outcome;
+  if (!o) return "";
+  const r = o.r === null || o.r === undefined ? "" : " · " + (o.r > 0 ? "+" : "") + fmtNum(o.r, 1) + "R";
+  const text = o.result === "tp" ? "Hit target" + r : o.result === "sl" ? "Hit stop" + r : "Missed — target hit before entry";
+  return '<div class="outcome-line ' + esc(o.result) + '">' + esc(text) + " · " + fmtPrice(s.symbol, o.price) + ' <span class="faint">' + timeAgo(new Date(o.at).getTime()) + "</span></div>";
+}
+function logPromptCard(s) {
+  return '<div class="log-prompt">' +
+    '<div class="log-prompt-text"><b>' + esc(symLabel(s.symbol)) + " " + (s.direction === "short" ? "sell" : "buy") + "</b> " +
+      (s.outcome ? (s.outcome.result === "tp" ? "hit its target" : "hit its stop") + (s.outcome.r !== null && s.outcome.r !== undefined ? " (" + (s.outcome.r > 0 ? "+" : "") + fmtNum(s.outcome.r, 1) + "R)" : "")
+        : s.status === "invalidated" ? "was invalidated" : "is finished") +
+      ". Did you take it?</div>" +
+    '<div class="log-prompt-actions">' +
+      '<button class="btn primary small" data-action="log-setup-trade" data-id="' + esc(s.id) + '">' + icon("plus") + "Yes, log it</button>" +
+      '<button class="btn ghost small" data-action="skip-setup-log" data-id="' + esc(s.id) + '">No, I didn\'t</button>' +
+    "</div></div>";
+}
+function logPromptsPanel() {
+  const list = state.setups.filter(s => s.logPrompt && unloggedSetup(s));
+  if (!list.length) return "";
+  return '<section class="panel log-prompts section-gap"><div class="panel-head"><h2>Log your finished setups</h2><span class="hint">' +
+    plural(list.length, "setup") + " waiting</span></div>" + list.map(logPromptCard).join("") + "</section>";
+}
+
 function setupCard(s) {
   const cls = s.status === "triggered" ? "triggered"
     : s.status === "invalidated" || s.status === "done" ? "archived"
@@ -928,14 +959,17 @@ function setupCard(s) {
       '<span class="' + liveTone + '" data-dist="' + esc(s.id) + '">' + setupDistanceText(s) + "</span>" +
       (s.distancePips === null ? "" : '<span class="faint">alert at ' + fmtNum(s.threshold, 0) + " " + unitName(s.symbol) + "</span>") + "</div>" +
     '<i class="meter"><b data-meter="' + esc(s.id) + '" style="width:' + meterWidth(s) + '%"></b></i>' +
+    outcomeTag(s) +
     (s.note ? '<p class="setup-note">' + esc(s.note) + "</p>" : "") +
+    (s.status !== "watching" && unloggedSetup(s) && !s.logPrompt ? '<div class="log-ask">Did you take this trade?</div>' : "") +
     '<div class="setup-actions">' +
       (s.status === "watching"
         ? '<button class="btn small" data-action="edit-setup" data-id="' + esc(s.id) + '">' + icon("edit") + "Edit</button>" +
           '<button class="btn ghost small" data-action="trigger-setup" data-id="' + esc(s.id) + '" title="Tick this when price has hit your entry">' + icon("play") + "Mark triggered</button>" +
           '<button class="btn ghost small" data-action="set-setup-status" data-id="' + esc(s.id) + '" data-status="invalidated">Invalidate</button>'
-        : (s.status === "triggered" && !state.trades.some(t => t.setupId === s.id)
-            ? '<button class="btn primary small" data-action="log-setup-trade" data-id="' + esc(s.id) + '">' + icon("plus") + "Log trade</button>"
+        : (unloggedSetup(s)
+            ? '<button class="btn primary small" data-action="log-setup-trade" data-id="' + esc(s.id) + '">' + icon("plus") + "Log trade</button>" +
+              (s.status !== "triggered" ? '<button class="btn ghost small" data-action="skip-setup-log" data-id="' + esc(s.id) + '">Not taken</button>' : "")
             : "") +
           '<button class="btn ghost small" data-action="edit-setup" data-id="' + esc(s.id) + '">Edit</button>' +
           '<button class="btn ghost small" data-action="set-setup-status" data-id="' + esc(s.id) + '" data-status="watching">Back to watching</button>') +
@@ -949,7 +983,7 @@ function renderSetups() {
   const watching = state.priority;
   const triggered = state.setups.filter(s => s.status === "triggered");
   const archived = state.setups.filter(s => s.status === "invalidated" || s.status === "done");
-  let html = '<div class="section-title"><h2>On watch</h2><span class="count">' + watching.length +
+  let html = logPromptsPanel() + '<div class="section-title"><h2>On watch</h2><span class="count">' + watching.length +
     '</span><span class="spacer"></span><span class="muted" style="font-size:12.5px">Priority markets first, then closest to entry</span></div>';
   html += watching.length
     ? '<div class="setups-grid">' + watching.map(setupCard).join("") + "</div>"
@@ -1029,12 +1063,17 @@ function renderAlerts() {
   const ntfyOn = !!(state.settings.ntfyTopic);
   const tgOn = !!(state.settings.telegramToken && state.settings.telegramChatId);
   const callOn = !!state.settings.callmebotUser;
+  const pushOn = !!(state.settings.pushoverUser && (state.pushoverApp || state.settings.pushoverToken));
   const browserSupported = "Notification" in window;
   const browserPermission = browserSupported ? Notification.permission : "unsupported";
 
   const browserOn = browserPermission === "granted" && ui.browserAlerts;
   const dot = (on, warn) => '<span class="state-dot ' + (on ? "on" : warn ? "warn" : "off") + '">' + (on ? "On" : warn ? "Blocked" : "Off") + "</span>";
   return remindersPanel() + '<div class="channel-grid section-gap">' +
+    '<div class="channel ' + (pushOn ? "on" : "") + '"><div class="channel-top"><strong>Alarm (Pushover)</strong>' + dot(pushOn) + "</div>" +
+      "<p>" + (pushOn ? "Entry alerts sound as an alarm, even on silent, and repeat every 30 seconds until you tap them."
+        : "Best way not to miss an entry: a loud alarm that rings through silent mode and Do Not Disturb until you tap it. One-off $5 app.") + "</p>" +
+      '<button class="btn ghost small" data-' + (pushOn ? 'action="test-alert"' : 'view="settings"') + ">" + (pushOn ? "Send test alarm" : "Set up alarm") + "</button></div>" +
     '<div class="channel ' + (ntfyOn ? "on" : "") + '"><div class="channel-top"><strong>Phone push (ntfy)</strong>' + dot(ntfyOn) + "</div>" +
       "<p>" + (ntfyOn ? "Sending to topic <b>" + esc(state.settings.ntfyTopic) + "</b>." :
         "Free phone notifications with no account. Install the ntfy app, pick a private topic and you are set.") + "</p>" +
@@ -1042,7 +1081,7 @@ function renderAlerts() {
     '<div class="channel ' + (tgOn ? "on" : "") + '"><div class="channel-top"><strong>Telegram</strong>' + dot(tgOn) + "</div>" +
       "<p>" + (tgOn ? "Bot configured and ready." : "Create a bot with @BotFather, then add its token and your chat ID.") + "</p>" +
       '<button class="btn ghost small" data-view="settings">' + (tgOn ? "Manage bot" : "Set up Telegram") + "</button></div>" +
-    '<div class="channel ' + (callOn ? "on" : "") + '"><div class="channel-top"><strong>Phone call (Telegram)</strong>' + dot(callOn) + "</div>" +
+    '<div class="channel ' + (callOn ? "on" : "") + '"><div class="channel-top"><strong>Telegram call (basic)</strong>' + dot(callOn) + "</div>" +
       "<p>" + (callOn ? "Tradera rings <b>" + esc(state.settings.callmebotUser) + "</b> on Telegram and reads the alert aloud when price reaches an entry."
         : "Get a real Telegram voice call when price hits your entry, so you never sleep through a setup.") + "</p>" +
       '<button class="btn ghost small" data-' + (callOn ? 'action="test-call"' : 'view="settings"') + ">" + (callOn ? "Test call" : "Set up calls") + "</button></div>" +
@@ -1068,10 +1107,11 @@ function renderAlerts() {
             const channels = (a.channels || []).map(c =>
               '<span class="chip">' + esc(c.channel || c) + (c.ok === false ? " failed" : " sent") + "</span>").join("");
             const reminder = a.kind === "reminder";
+            const outcome = a.kind === "outcome";
             return '<div class="alert-row' + (reminder ? "" : " row-link") + '"' + (reminder ? "" : ' data-action="chart" data-symbol="' + esc(a.symbol) + '"') + ">" +
               '<div class="alert-ico ' + (a.kind === "entry" ? "entry" : a.kind === "test" || reminder ? "test" : "") + '">' + (a.kind === "entry" ? "◎" : a.kind === "test" ? "✓" : reminder ? "⏰" : "↗") + "</div>" +
               '<div class="alert-main"><b>' + (reminder ? "Chart check" : esc(a.symbol) + " · " +
-                esc(a.kind === "entry" ? "Entry reached" : a.kind === "test" ? "Test alert" : "Getting close to entry")) + "</b>" +
+                esc(a.kind === "entry" ? "Entry reached" : a.kind === "test" ? "Test alert" : outcome ? "Setup finished" : "Getting close to entry")) + "</b>" +
                 "<p>" + esc(a.message) + "</p>" +
                 (channels ? '<div class="chips">' + channels + "</div>" : "") + "</div>" +
               '<div class="alert-time">' + timeAgo(a.at) + "</div></div>";
@@ -1264,6 +1304,11 @@ function renderSettings() {
 
     settingsSection("Notifications", "Get pinged on your phone when price nears an entry, even with Tradera closed.",
       '<div class="form-grid">' +
+        '<label class="field full"><span>Pushover user key <em>alarm that rings until you tap it</em></span>' +
+          '<div style="display:flex;gap:6px"><input name="pushoverUser" value="' + esc(s.pushoverUser || "") + '" autocomplete="off" placeholder="30 letters and numbers, e.g. uQiRzpo4DXghDmr9QzzfQu27cmVRsG">' +
+          '<button class="btn ghost small" type="button" data-action="test-alert">Test</button></div></label>' +
+        (state.pushoverApp ? "" :
+          '<label class="field full"><span>Pushover app token <em>only until the site owner switches Pushover on</em></span><input name="pushoverToken" type="password" value="' + esc(s.pushoverToken || "") + '" autocomplete="off" placeholder="From pushover.net → Create an Application"></label>') +
         '<label class="field full"><span>ntfy topic <em>phone push</em></span>' +
           '<div style="display:flex;gap:6px"><input id="ntfyTopic" name="ntfyTopic" value="' + esc(s.ntfyTopic) + '" autocomplete="off" placeholder="e.g. tradera-yourname-8f3k">' +
           '<button class="btn ghost small" type="button" data-action="gen-topic">Generate</button></div></label>' +
@@ -1278,6 +1323,8 @@ function renderSettings() {
         '<label class="check-line" style="align-self:end;padding-bottom:10px"><input type="checkbox" name="callOnApproach"' + (s.callOnApproach ? " checked" : "") +
           "> Also ring me when price is getting close (call and urgent ntfy)</label>" +
       "</div>" +
+      '<div class="field-note" style="margin-top:10px"><b>Pushover alarm (recommended):</b> install Pushover (iPhone or Android; 30-day free trial, then a one-off $5), sign up, and copy the <b>Your User Key</b> code from the top of the app or pushover.net into the box above. Save, then press Test. ' +
+        "Entry alerts then ring as an alarm through silent mode and Do Not Disturb and repeat every 30 seconds for 10 minutes until you tap them. On iPhone, allow Critical Alerts when Pushover asks.</div>" +
       '<div class="field-note" style="margin-top:10px">ntfy: install the free ntfy app, subscribe to the topic above, save, then send a test alert. Entry alerts are sent as urgent; in the ntfy Android app turn on Settings → Keep alerting for highest priority so they keep ringing until you dismiss them. ' +
         "Telegram: paste your bot token, press Start in your bot's chat, then press Find to fill in your chat ID. " +
         "Calls: open Telegram, send /start to @CallMeBot_txtbot once to allow it, then save your @username here. Calls ring when price reaches an entry.</div>") +
@@ -1373,8 +1420,9 @@ function attachViewListeners() {
       const fd = new FormData(form);
       const payload = {};
       ["accountCurrency", "startingBalance", "feed", "twelveDataKey", "oandaToken", "oandaEnv", "pollSeconds",
-        "defaultThresholdPips", "ntfyServer", "ntfyTopic", "telegramToken", "telegramChatId", "callmebotUser"].forEach(function (key) {
-        payload[key] = fd.get(key);
+        "defaultThresholdPips", "ntfyServer", "ntfyTopic", "telegramToken", "telegramChatId", "callmebotUser",
+        "pushoverUser", "pushoverToken"].forEach(function (key) {
+        if (fd.has(key)) payload[key] = fd.get(key);
       });
       payload.binanceCrypto = fd.get("binanceCrypto") === "on";
       payload.callOnApproach = fd.get("callOnApproach") === "on";
@@ -1562,6 +1610,13 @@ function connectSSE() {
 }
 
 function showAlert(alert) {
+  if (alert.kind === "outcome") {
+    toast(symLabel(alert.symbol) + " setup finished", alert.message, "alert", 15000);
+    if (ui.browserAlerts && "Notification" in window && Notification.permission === "granted") {
+      try { new Notification(symLabel(alert.symbol) + " setup finished", { body: alert.message, tag: alert.id }); } catch (_) { /* ignore */ }
+    }
+    return;
+  }
   if (alert.kind === "reminder") {
     toast("Time to check your charts", alert.message, "alert", 12000);
     if (ui.browserAlerts && "Notification" in window && Notification.permission === "granted") {
@@ -1674,7 +1729,7 @@ function openTradeForm(trade, presetSetup) {
   const t = trade || {};
   const isEdit = !!trade;
   const isClosed = t.status === "closed";
-  const title = isEdit ? "Edit trade" : presetSetup ? "Trigger setup" : "New trade";
+  const title = isEdit ? "Edit trade" : presetSetup ? (presetSetup.status === "watching" || presetSetup.status === "triggered" ? "Trigger setup" : "Log finished setup") : "New trade";
   const subtitle = presetSetup
     ? presetSetup.symbol + " " + String(presetSetup.direction).toUpperCase() + " · entry " +
       fmtPrice(presetSetup.symbol, presetSetup.entry)
@@ -2071,7 +2126,9 @@ function openImportForm() {
       '<div class="import-shot">' +
         '<label class="btn ghost import-upload">' + icon("plus") + '<span>Add screenshot</span><input type="file" name="shot" accept="image/*" hidden></label>' +
         '<div class="import-thumb" id="importThumb" hidden></div>' +
-        '<p class="import-hint">' + (state.readerAI
+        '<p class="import-hint">' + (state.readerAI && state.plan === "free"
+          ? "Screenshots of written signals are read for free. Reading chart pictures with AI is part of Tradera Pro."
+          : state.readerAI
           ? "Chart screenshots are read by AI. Screenshots of written signals work too."
           : "Screenshots of written signals (Telegram, WhatsApp…) are read on this device. Charts with only drawn lines need the AI chart reader switched on.") + "</p>" +
       "</div>" +
@@ -2113,7 +2170,7 @@ function openImportForm() {
   };
 
   const readShot = async function () {
-    if (state.readerAI) {
+    if (state.readerAI && state.plan !== "free") {
       say("Reading the chart…");
       try {
         const out = await post("/api/setups/read", { image: shot });
@@ -2126,7 +2183,8 @@ function openImportForm() {
       say("Reading the screenshot text…");
     }
     const text = await readTextFromImage(shot, function (pct) { say("Reading the screenshot text… " + pct + "%"); });
-    if (!text.trim()) throw new Error("No text found in that screenshot." + (state.readerAI ? "" : " Chart pictures need the AI chart reader; you can type the setup instead."));
+    if (!text.trim()) throw new Error("No text found in that screenshot." + (state.readerAI && state.plan === "free" ? " Reading chart pictures is part of Tradera Pro; you can type the setup instead."
+      : state.readerAI ? "" : " Chart pictures need the AI chart reader; you can type the setup instead."));
     form.elements.text.value = text.trim();
     await readText(text, "ocr");
   };
@@ -2524,7 +2582,23 @@ document.addEventListener("click", async function (e) {
     }
     if (action === "log-setup-trade") {
       const setup = state.setups.find(s => s.id === id);
-      if (setup) openTradeForm(null, setup);
+      if (!setup) return;
+      openTradeForm(null, setup);
+      const form = document.getElementById("tradeForm");
+      if (form && setup.entryHitAt && form.elements.openedAt) form.elements.openedAt.value = toLocalInput(setup.entryHitAt);
+      if (form && setup.outcome && setup.outcome.result !== "missed") {
+        const st = form.elements.status;
+        st.value = "closed";
+        st.dispatchEvent(new Event("change", { bubbles: true }));
+        if (form.elements.exit) form.elements.exit.value = setup.outcome.price;
+        if (form.elements.closedAt) form.elements.closedAt.value = toLocalInput(setup.outcome.at);
+        form.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      return;
+    }
+    if (action === "skip-setup-log") {
+      applyState(await post("/api/setups/" + encodeURIComponent(id) + "/skip-log", {}));
+      toast("Noted", "Marked as not taken. It stays under Finished.");
       return;
     }
     if (action === "delete-trade") {
@@ -2542,6 +2616,14 @@ document.addEventListener("click", async function (e) {
     }
     if (action === "set-setup-status") {
       applyState(await post("/api/setups/" + encodeURIComponent(id) + "/status", { status: el.dataset.status }));
+      if (el.dataset.status === "invalidated") {
+        const done = state.setups.find(s => s.id === id);
+        if (done && unloggedSetup(done) && await confirmDialog("Did you take this trade?",
+          "If you were in it, log it now so your journal and stats stay complete.", "Yes, log it")) {
+          openTradeForm(null, done);
+          return;
+        }
+      }
       toast(el.dataset.status === "watching" ? "Back on watch" : "Setup invalidated",
         el.dataset.status === "watching" ? "Tradera is watching this setup again." : "It moved to Finished. Reactivate it any time.");
       return;

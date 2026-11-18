@@ -222,6 +222,33 @@ for you to check and fix, and **Start watching** puts them on watch with alerts.
   `ANTHROPIC_API_KEY` (your own key from console.anthropic.com) to the site's environment
   variables on Netlify, or to the environment before `node server.js`. It uses Claude Opus 5.5
   (change it with `TRADERA_AI_MODEL`), and each chart read is billed to that key.
+- Reading chart pictures with AI is a **Pro** feature on the online (accounts) version.
+
+## Finished setups and the journal
+
+After price reaches a setup's entry, Tradera keeps watching it. When the stop or the target is
+hit, the setup moves to **Finished**, you get a "Setup finished" alert, and Setups and the
+dashboard ask **Did you take it?** **Yes, log it** opens the trade form already filled in
+(entry, stop, exit, open and close times); **No, I didn't** clears the prompt. A target reached
+before the entry ever filled is marked **missed**. Setups you invalidate yourself ask too.
+Prices are checked every 2 minutes online, so a quick wick between checks can be missed.
+
+## Pushover alarm (recommended for entries)
+
+Pushover rings entry alerts as an alarm that sounds through silent mode and Do Not Disturb
+and repeats every 30 seconds for 10 minutes until tapped. Each user pays Pushover once ($5,
+30-day free trial) and pastes their **User Key** in Settings → Notifications.
+
+Site owner, once: create a free application at pushover.net → *Create an Application/API
+Token* and add the token to Netlify as `PUSHOVER_APP_TOKEN`. The free allowance is 10,000
+messages a month for the whole site; Pushover sells more if you outgrow it. Until the token is
+set, each user can paste their own app token instead.
+
+## Pro accounts
+
+Until payments are added, give an account Pro by listing its email in the Netlify variable
+`TRADERA_PRO_EMAILS` (comma separated). Pro today: reading chart pictures with AI. Planned:
+real phone calls (Twilio).
 
 ## Chart check reminders
 
