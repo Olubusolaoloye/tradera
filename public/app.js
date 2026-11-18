@@ -2926,7 +2926,7 @@ function setTheme(theme) {
     store("theme", null);
   }
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.content = currentTheme() === "light" ? "#EDEFF2" : "#0A0B0D";
+  if (meta) meta.content = currentTheme() === "light" ? "#EAF0F8" : "#070B14";
   if (ui.view === "dashboard") renderView();
 }
 

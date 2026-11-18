@@ -1482,3 +1482,116 @@ input:focus, select:focus, textarea:focus { border-color: var(--brass); box-shad
 @media (max-width: 900px) {
   .tabbar button.active { background: var(--hover); box-shadow: inset 0 0 0 1px var(--line); }
 }
+
+/* =====================================================================
+   Tradera 3.2 — "sapphire desk"
+   Deep navy glass with one blue. Gradients stay inside a single hue
+   (deep sapphire to azure), like brushed metal, never blue to purple.
+   ===================================================================== */
+:root {
+  --bg: #070B14;
+  --bg-glow: rgba(60, 140, 255, .08);
+  --surface: rgba(16, 22, 36, .62);
+  --surface-2: rgba(24, 32, 50, .68);
+  --surface-3: rgba(36, 46, 70, .74);
+  --sunken: rgba(5, 8, 15, .58);
+  --line: rgba(150, 180, 230, .09);
+  --line-strong: rgba(150, 180, 230, .16);
+  --hover: rgba(120, 160, 230, .06);
+  --text: #EEF2F9;
+  --muted: #9CA8BD;
+  --faint: #687489;
+  --brass: #4C9BFF;
+  --brass-strong: #7DB6FF;
+  --brass-ink: #FFFFFF;
+  --brass-soft: rgba(76, 155, 255, .14);
+  --violet: #8E9BB3;
+  --violet-soft: rgba(142, 155, 179, .10);
+  --btn-top: #3F8EF7;
+  --btn-bottom: #1D5FD1;
+  --info: #8FB4F0;
+  --info-soft: rgba(143, 180, 240, .12);
+  --glass-edge: linear-gradient(165deg, rgba(190, 215, 255, .20), rgba(190, 215, 255, .05) 38%, rgba(255, 255, 255, .015) 75%);
+  --grid-line: rgba(150, 180, 240, .035);
+  --aurora-a: rgba(60, 140, 255, .12);
+  --aurora-b: rgba(35, 85, 200, .10);
+  --aurora-c: rgba(255, 255, 255, .02);
+  --solid: #0F1522;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #EAF0F8;
+    --bg-glow: rgba(29, 100, 216, .07);
+    --surface: rgba(255, 255, 255, .66);
+    --surface-2: rgba(255, 255, 255, .78);
+    --surface-3: rgba(232, 238, 248, .92);
+    --sunken: rgba(237, 242, 250, .82);
+    --line: rgba(20, 40, 80, .09);
+    --line-strong: rgba(20, 40, 80, .16);
+    --hover: rgba(20, 60, 140, .05);
+    --text: #0F1626;
+    --muted: #4F5B72;
+    --faint: #8792A6;
+    --brass: #1D64D8;
+    --brass-strong: #3A82F0;
+    --brass-ink: #FFFFFF;
+    --brass-soft: rgba(29, 100, 216, .10);
+    --violet: #6B7790;
+    --violet-soft: rgba(107, 119, 144, .09);
+    --btn-top: #3A82F0;
+    --btn-bottom: #1A56C4;
+    --info: #3F5F99;
+    --info-soft: rgba(63, 95, 153, .09);
+    --glass-edge: linear-gradient(165deg, rgba(255, 255, 255, .95), rgba(255, 255, 255, .35) 45%, rgba(20, 40, 80, .06));
+    --grid-line: rgba(20, 50, 120, .045);
+    --aurora-a: rgba(58, 130, 240, .14);
+    --aurora-b: rgba(29, 86, 196, .08);
+    --aurora-c: rgba(255, 255, 255, .3);
+    --solid: #FFFFFF;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #EAF0F8;
+  --bg-glow: rgba(29, 100, 216, .07);
+  --surface: rgba(255, 255, 255, .66);
+  --surface-2: rgba(255, 255, 255, .78);
+  --surface-3: rgba(232, 238, 248, .92);
+  --sunken: rgba(237, 242, 250, .82);
+  --line: rgba(20, 40, 80, .09);
+  --line-strong: rgba(20, 40, 80, .16);
+  --hover: rgba(20, 60, 140, .05);
+  --text: #0F1626;
+  --muted: #4F5B72;
+  --faint: #8792A6;
+  --brass: #1D64D8;
+  --brass-strong: #3A82F0;
+  --brass-ink: #FFFFFF;
+  --brass-soft: rgba(29, 100, 216, .10);
+  --violet: #6B7790;
+  --violet-soft: rgba(107, 119, 144, .09);
+  --btn-top: #3A82F0;
+  --btn-bottom: #1A56C4;
+  --info: #3F5F99;
+  --info-soft: rgba(63, 95, 153, .09);
+  --glass-edge: linear-gradient(165deg, rgba(255, 255, 255, .95), rgba(255, 255, 255, .35) 45%, rgba(20, 40, 80, .06));
+  --grid-line: rgba(20, 50, 120, .045);
+  --aurora-a: rgba(58, 130, 240, .14);
+  --aurora-b: rgba(29, 86, 196, .08);
+  --aurora-c: rgba(255, 255, 255, .3);
+  --solid: #FFFFFF;
+  color-scheme: light;
+}
+
+/* primary buttons: one blue, lit from above */
+.btn.primary {
+  background: linear-gradient(180deg, var(--btn-top) 0%, var(--btn-bottom) 100%);
+  color: #FFFFFF;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .28), inset 0 -1px 0 rgba(0, 0, 0, .22), 0 8px 22px -10px var(--btn-bottom);
+}
+/* progress meters and the alert bar run deep blue to azure */
+.meter b { background: linear-gradient(90deg, var(--btn-bottom), var(--brass)); }
+.toast.alert::after { background: linear-gradient(90deg, var(--btn-bottom), var(--brass)); }
+.nav button.active::before { background: linear-gradient(180deg, var(--brass-strong), var(--btn-bottom)); }
+.brand-mark { background: linear-gradient(160deg, #142038, #0A101D); box-shadow: inset 0 0 0 1px rgba(150, 190, 255, .16), 0 6px 18px rgba(0, 0, 0, .35); }
