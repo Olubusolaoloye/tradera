@@ -299,6 +299,20 @@
     }));
   }
 
+  const aiResult = h("div");
+  function testAiButton() {
+    return h("button", { class: "btn small", type: "button", text: "Test", onclick: async function () {
+      clear(aiResult);
+      busy(this, true, "Testing…");
+      const btn = this;
+      try {
+        const r = await api("/api/admin/test-ai", { method: "POST", body: {} });
+        aiResult.appendChild(msg(r.ok ? "ok" : "error", r.message + (r.ms ? " (" + (r.ms / 1000).toFixed(1) + "s)" : "")));
+      } catch (err) { if (err.message !== "signed-out") aiResult.appendChild(msg("error", err.message)); }
+      finally { busy(btn, false); }
+    } });
+  }
+
   function renderOverview(page) {
     const s = data.stats, env = data.env, cfg = data.config;
     page.appendChild(h("div", { class: "stats" }, [
@@ -317,7 +331,8 @@
       ]),
       h("section", { class: "panel" }, [
         h("div", { class: "panel-head" }, h("h2", { text: "Netlify settings" })),
-        h("div", { class: "env-row" }, [h("span", { text: "AI chart reading key (ANTHROPIC_API_KEY)" }), pill(env.aiKey, "Set", "Missing")]),
+        h("div", { class: "env-row" }, [h("span", { text: "AI chart reading key (ANTHROPIC_API_KEY)" }), h("span", null, [pill(env.aiKey, "Set", "Missing"), " ", testAiButton()])]),
+        aiResult,
         h("div", { class: "env-row" }, [h("span", { text: "Pushover app token (PUSHOVER_APP_TOKEN)" }), pill(env.pushoverToken, "Set", "Missing")]),
         h("div", { class: "env-row" }, [h("span", { text: "Sign-ups closed by TRADERA_SIGNUPS" }), pill(!env.signupsClosedByEnv, "No", "Yes — overrides the switch")]),
         h("div", { class: "env-row" }, [h("span", { text: "Admins (TRADERA_ADMIN_EMAILS)" }), h("span", { text: String(env.admins) })])
