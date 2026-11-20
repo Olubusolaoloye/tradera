@@ -2199,29 +2199,38 @@ function openImportForm() {
     results.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
-  const readText = async function (text, via) {
+  const readText = async function (text, via, emptyNote) {
     const out = await post("/api/setups/read", { text: text });
-    showResults(out.setups, out.problem, via || "text");
+    const list = out.setups || [];
+    showResults(list, list.length ? null : (emptyNote || out.problem), via || "text");
+    return list.length;
   };
 
   const readShot = async function () {
-    if (state.readerAI && state.plan !== "free" && feat("aiChartReader")) {
-      say("Reading the chart…");
+    // Why the AI didn't read this picture, so the user isn't left guessing.
+    let why = "";
+    if (!state.readerAI) why = "Reading prices from chart pictures needs the AI chart reader, which isn't switched on for this site.";
+    else if (!feat("aiChartReader")) why = "AI chart reading is switched off for now.";
+    else if (state.plan === "free") why = "Reading prices from chart pictures is part of Tradera Pro. On the free plan only written signals in screenshots are read.";
+
+    if (!why) {
+      say("Reading the chart with AI… this can take up to 30 seconds.");
       try {
         const out = await post("/api/setups/read", { image: shot });
         if (out.setups && out.setups.length) { showResults(out.setups, null, "ai"); return; }
-        say("No setup on the chart; reading any text in the screenshot…");
+        why = "The AI couldn't find a setup on this chart" + (out.problem ? ": " + out.problem : ".");
       } catch (error) {
-        say(error.message + " Reading the screenshot text instead…");
+        why = "The AI chart reader failed: " + error.message;
       }
+      say(why + " Reading any written text instead…");
     } else {
       say("Reading the screenshot text…");
     }
     const text = await readTextFromImage(shot, function (pct) { say("Reading the screenshot text… " + pct + "%"); });
-    if (!text.trim()) throw new Error("No text found in that screenshot." + (state.readerAI && state.plan === "free" ? " Reading chart pictures is part of Tradera Pro; you can type the setup instead."
-      : state.readerAI ? "" : " Chart pictures need the AI chart reader; you can type the setup instead."));
+    const tail = " You can also paste or type the setup.";
+    if (!text.trim()) throw new Error(why ? why + tail : "No text found in that screenshot." + tail);
     form.elements.text.value = text.trim();
-    await readText(text, "ocr");
+    await readText(text, "ocr", (why ? why + " " : "") + "No prices were found in the screenshot's text." + tail);
   };
 
   const run = async function () {
