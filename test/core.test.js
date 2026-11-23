@@ -349,6 +349,51 @@ async function test(name, fn) {
     pushLib.setPushKeys(null);
   });
 
+  await test("urgent notifications keep ringing until stopped", async () => {
+    const pushLib = require("../lib/webpush");
+    const sent = [];
+    pushLib.useWebPush({
+      generateVAPIDKeys: () => ({ publicKey: "B" + "x".repeat(86), privateKey: "y".repeat(43) }),
+      sendNotification: async (sub, body, opts) => { sent.push({ body: JSON.parse(body), opts }); return { statusCode: 201 }; }
+    });
+    pushLib.setPushKeys(pushLib.newPushKeys());
+    try {
+      const d = core.createDesk({ store: createMemoryStore(null), realtime: false, accountId: "11111111-2222-3333-4444-555555555555" });
+      await d.load();
+      await d.handle("POST", "/api/push/subscribe", { subscription: { endpoint: "https://fcm.googleapis.com/fcm/send/ring-test-1", keys: { p256dh: "B" + "p".repeat(86), auth: "a".repeat(22) } } });
+      await d.handle("POST", "/api/setups", { symbol: "EURUSD", direction: "long", entry: 1.08, stop: 1.07, target: 1.1, thresholdPips: 5 });
+      d._setQuote("EURUSD", 1.0799);
+      await d._evaluate();
+      assert.equal(sent.length, 1, "entry alert sent");
+      const first = sent[0].body;
+      assert.equal(first.urgent, true);
+      assert.ok(first.ack && first.ack.a && first.ack.k);
+      assert.equal(first.ack.u, "11111111-2222-3333-4444-555555555555");
+      // Too soon: no repeat yet. A minute later: rings again.
+      await d.reRing(Date.now() + 10000);
+      assert.equal(sent.length, 1);
+      await d.reRing(Date.now() + 60000);
+      assert.equal(sent.length, 2);
+      assert.ok(sent[1].body.body.includes("alert 2 of 10"));
+      // A wrong stop code changes nothing; the right one stops it.
+      await d.handle("POST", "/api/push/ack", { a: first.ack.a, k: "0".repeat(24) });
+      await d.reRing(Date.now() + 120000);
+      assert.equal(sent.length, 3);
+      const r = await d.handle("POST", "/api/push/ack", { a: first.ack.a, k: first.ack.k });
+      assert.equal(r.body.stopped, 1);
+      await d.reRing(Date.now() + 180000);
+      assert.equal(sent.length, 3, "no more rings after stop");
+      // It also stops by itself after 10 rings.
+      await d.handle("POST", "/api/setups", { symbol: "GBPUSD", direction: "short", entry: 1.27, stop: 1.28, target: 1.25, thresholdPips: 5 });
+      d._setQuote("GBPUSD", 1.2701);
+      await d._evaluate();
+      const before = sent.length;
+      for (let i = 1; i <= 15; i++) await d.reRing(Date.now() + i * 60000);
+      assert.equal(sent.length - before, 9, "10 rings in total");
+      assert.equal(d.isRinging(), false);
+    } finally { pushLib.setPushKeys(null); }
+  });
+
   await test("bulk add skips duplicates", async () => {
     const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
     await d.load();

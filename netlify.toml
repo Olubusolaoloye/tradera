@@ -5,11 +5,11 @@
 [functions]
   node_bundler = "esbuild"
 
-# Refresh quotes + evaluate entry alerts on a schedule. Netlify supports
-# minute-level cron. Two minutes keeps well inside free-tier usage while still
-# being useful for swing/position entries. Change to "*/5 * * * *" to save quota.
+# Refresh quotes, evaluate entry alerts and re-ring urgent notifications every
+# minute (about 43,000 runs a month, inside Netlify's free allowance).
+# Change to "*/2 * * * *" to halve usage.
 [functions."poll"]
-  schedule = "*/2 * * * *"
+  schedule = "* * * * *"
 
 # Send every /api request to one function so routes stay identical to the
 # local Node server.

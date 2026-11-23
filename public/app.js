@@ -426,7 +426,16 @@ function seedAlerts(list) {
 }
 
 let pushChecked = false;
+let lastAckAll = 0;
+/** Seeing the app means the user has the alert: stop any ringing. */
+function stopRingingIfSeen(next) {
+  if (document.hidden || !next || !Array.isArray(next.alerts) || !next.alerts.some(a => a && a.ringing)) return;
+  if (Date.now() - lastAckAll < 10000) return;
+  lastAckAll = Date.now();
+  post("/api/push/ack-all", {}).catch(function () { /* next refresh */ });
+}
 function applyState(next, options) {
+  stopRingingIfSeen(next);
   if (!pushChecked && next && next.push) {
     pushChecked = true;
     setTimeout(function () { syncPushState().then(function () { if (ui.view === "alerts") renderView(); }); }, 0);

@@ -244,7 +244,7 @@ const server = http.createServer(async (req, res) => {
 
   // Everything else under /api needs a login once a password is set. The live
   // stream can't send headers (EventSource), so it passes the token as ?key=.
-  if (pathname.startsWith("/api/")) {
+  if (pathname.startsWith("/api/") && pathname !== "/api/push/ack") {
     const token = req.headers["x-desk-key"] || url.searchParams.get("key") || "";
     if (!desk.authorize(pathname, token)) {
       return sendJSON(res, 401, { error: "Password required", auth: "password" });

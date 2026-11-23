@@ -10,7 +10,7 @@
    - Everything else (icons, fonts) is served from cache and refreshed behind
      the scenes. */
 
-const VERSION = "3.3.0";
+const VERSION = "3.4.0";
 const CACHE = "tradera-shell-" + VERSION;
 const SHELL = [
   "/",
@@ -110,18 +110,39 @@ self.addEventListener("push", function (event) {
   event.waitUntil(self.registration.showNotification(d.title || "Tradera", {
     body: d.body || "",
     tag: d.tag || "tradera",
-    renotify: true,
-    requireInteraction: urgent,            // entries stay on screen until tapped
+    renotify: true,                        // every repeat sounds and vibrates again
+    requireInteraction: urgent,            // urgent alerts stay on screen until handled
+    silent: false,
     icon: "/icons/apple-touch-icon.png",
     badge: "/icons/apple-touch-icon.png",
-    vibrate: urgent ? [400, 120, 400, 120, 800] : [160],
+    vibrate: urgent ? [600, 200, 600, 200, 600, 200, 1200, 300, 600, 200, 600] : [160],
     timestamp: d.at || Date.now(),
-    data: { url: d.url || "/" }
+    actions: d.ack ? [{ action: "stop", title: "Stop alerts" }, { action: "open", title: "Open Tradera" }] : [],
+    data: { url: d.url || "/", ack: d.ack || null }
   }));
+});
+
+/** Tell Tradera to stop re-ringing this alert. */
+function stopRinging(notification) {
+  const ack = notification.data && notification.data.ack;
+  if (!ack) return Promise.resolve();
+  return fetch("/api/push/ack", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(ack),
+    keepalive: true
+  }).catch(function () { /* the app stops it when opened */ });
+}
+
+/* Swiping an urgent alert away also stops the ringing. */
+self.addEventListener("notificationclose", function (event) {
+  event.waitUntil(stopRinging(event.notification));
 });
 
 self.addEventListener("notificationclick", function (event) {
   event.notification.close();
+  const stop = stopRinging(event.notification);
+  if (event.action === "stop") { event.waitUntil(stop); return; }
   const target = new URL((event.notification.data && event.notification.data.url) || "/", self.location.origin).href;
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
