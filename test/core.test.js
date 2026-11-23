@@ -313,6 +313,42 @@ async function test(name, fn) {
     } finally { global.fetch = realFetch; }
   });
 
+  await test("Tradera notifications: devices are saved, alerted, and dropped when gone", async () => {
+    const pushLib = require("../lib/webpush");
+    const sent = [];
+    let answer = 201;
+    pushLib.useWebPush({
+      generateVAPIDKeys: () => ({ publicKey: "B" + "x".repeat(86), privateKey: "y".repeat(43) }),
+      sendNotification: async (sub, body, opts) => {
+        sent.push({ sub, body: JSON.parse(body), opts });
+        if (answer !== 201) { const e = new Error("gone"); e.statusCode = answer; throw e; }
+        return { statusCode: 201 };
+      }
+    });
+    pushLib.setPushKeys(pushLib.newPushKeys());
+    const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
+    await d.load();
+    const sub = { endpoint: "https://fcm.googleapis.com/fcm/send/abc123def456", keys: { p256dh: "B" + "p".repeat(86), auth: "a".repeat(22) } };
+    let res = await d.handle("POST", "/api/push/subscribe", { subscription: { endpoint: "http://evil" } });
+    assert.equal(res.status, 400);
+    res = await d.handle("POST", "/api/push/subscribe", { subscription: sub, label: "iPhone (app)" });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.push.devices.length, 1);
+    assert.equal(res.body.push.devices[0].label, "iPhone (app)");
+    assert.ok(!JSON.stringify(res.body.push).includes("abc123def456"), "the private address is never sent back");
+    res = await d.handle("POST", "/api/push/test", {});
+    assert.equal(res.status, 200);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].body.title, "Tradera test alert");
+    assert.equal(sent[0].body.urgent, true);
+    assert.equal(sent[0].opts.urgency, "high");
+    // The phone turned notifications off: the next alert removes it.
+    answer = 410;
+    res = await d.handle("POST", "/api/test-alert", {});
+    assert.equal(d.state().push.devices.length, 0);
+    pushLib.setPushKeys(null);
+  });
+
   await test("bulk add skips duplicates", async () => {
     const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
     await d.load();

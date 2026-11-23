@@ -425,7 +425,12 @@ function seedAlerts(list) {
   (list || []).forEach(function (a) { if (a && a.id) seenAlerts.add(a.id); });
 }
 
+let pushChecked = false;
 function applyState(next, options) {
+  if (!pushChecked && next && next.push) {
+    pushChecked = true;
+    setTimeout(function () { syncPushState().then(function () { if (ui.view === "alerts") renderView(); }); }, 0);
+  }
   const previous = new Set(((state && state.alerts) || []).map(function (a) { return a.id; }));
   const fresh = ((next && next.alerts) || []).filter(function (a) {
     return a && a.id && !previous.has(a.id) && !seenAlerts.has(a.id);
@@ -1103,6 +1108,7 @@ function renderAlerts() {
   const dot = (on, warn) => '<span class="state-dot ' + (on ? "on" : warn ? "warn" : "off") + '">' + (on ? "On" : warn ? "Blocked" : "Off") + "</span>";
   const card = (name, html) => feat(name) ? html : "";
   return (feat("reminders") ? remindersPanel() : "") + '<div class="channel-grid section-gap">' +
+    (feat("webpush") ? pushCard() : "") +
     card("pushover", '<div class="channel ' + (pushOn ? "on" : "") + '"><div class="channel-top"><strong>Alarm (Pushover)</strong>' + dot(pushOn) + "</div>" +
       "<p>" + (pushOn ? "Entry alerts sound as an alarm, even on silent, and repeat every 30 seconds until you tap them."
         : "Best way not to miss an entry: a loud alarm that rings through silent mode and Do Not Disturb until you tap it. One-off $5 app.") + "</p>" +
@@ -2806,6 +2812,13 @@ document.addEventListener("click", async function (e) {
       return;
     }
     if (action === "enable-alerts") return askNotificationPermission();
+    if (action === "push-on") return turnOnPush();
+    if (action === "push-off") return turnOffPush();
+    if (action === "push-test") {
+      applyState(await post("/api/push/test", {}));
+      toast("Test sent", "Check this device's notifications.");
+      return;
+    }
     if (action === "toggle-theme") {
       const dark = document.documentElement.dataset.theme
         ? document.documentElement.dataset.theme === "dark"
@@ -2877,6 +2890,113 @@ function setView(view) {
   renderChrome();
   renderView();
   window.scrollTo({ top: 0, behavior: "auto" });
+}
+
+/* ------------------------------------------------ Tradera notifications */
+
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const isInstalled = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const pushSupported = () => "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+ui.pushHere = false;
+
+function base64ToBytes(b64) {
+  const s = (b64 + "===".slice((b64.length + 3) % 4)).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(s);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+async function deviceIdOf(endpoint) {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(endpoint));
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("").slice(0, 12);
+}
+function deviceLabel() {
+  const ua = navigator.userAgent;
+  const os = isIOS ? (/iPad/.test(ua) || navigator.maxTouchPoints > 1 && !/iPhone/.test(ua) ? "iPad" : "iPhone")
+    : /Android/.test(ua) ? "Android" : /Windows/.test(ua) ? "Windows" : /Mac/.test(ua) ? "Mac" : "Computer";
+  const app = isInstalled() ? "app" : /Edg\//.test(ua) ? "Edge" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "browser";
+  return os + " (" + app + ")";
+}
+
+/** Is this device signed up, and does the server know it? Re-sends a rotated address. */
+async function syncPushState() {
+  ui.pushHere = false;
+  if (!pushSupported() || !state || !state.push || !state.push.available) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub || Notification.permission !== "granted") return;
+    const id = await deviceIdOf(sub.endpoint);
+    const known = (state.push.devices || []).some(d => d.id === id);
+    if (!known) applyState(await post("/api/push/subscribe", { subscription: sub.toJSON(), label: deviceLabel() }));
+    ui.pushHere = true;
+  } catch (_) { /* leave it off */ }
+}
+
+async function turnOnPush() {
+  if (!state.push || !state.push.available) return toast("Not available yet", "Tradera notifications aren't switched on for this site.", "error");
+  if (isIOS && !isInstalled()) {
+    return toast("Add Tradera to your Home Screen first", "In Safari tap Share → Add to Home Screen, open Tradera from the new icon, then turn notifications on from Alerts.", "error", 12000);
+  }
+  if (!pushSupported()) return toast("Not supported here", "This browser can't receive notifications. Try Chrome, Edge, Firefox or the iPhone home-screen app.", "error");
+  if (Notification.permission === "denied") {
+    return toast("Notifications are blocked", isIOS ? "Open iPhone Settings → Notifications → Tradera and allow notifications." : "Allow notifications for this site in your browser's site settings, then try again.", "error", 10000);
+  }
+  const permission = await Notification.requestPermission();
+  if (permission !== "granted") return toast("Notifications not turned on", "You can turn them on later from Alerts.", "error");
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64ToBytes(state.push.publicKey) });
+    applyState(await post("/api/push/subscribe", { subscription: sub.toJSON(), label: deviceLabel() }));
+    ui.pushHere = true;
+    if (ui.view === "alerts") renderView();
+    const r = await post("/api/push/test", {});
+    applyState(r);
+    toast("Notifications on", "Tradera sent a test notification to this device.");
+  } catch (err) {
+    toast("Couldn't turn on notifications", err.message, "error");
+  }
+}
+
+async function turnOffPush() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await post("/api/push/unsubscribe", { endpoint: sub.endpoint }).then(applyState);
+      await sub.unsubscribe();
+    }
+  } catch (_) { /* already off */ }
+  ui.pushHere = false;
+  if (ui.view === "alerts") renderView();
+  toast("Notifications off", "This device won't get Tradera notifications.");
+}
+
+function pushCard() {
+  const p = state.push || {};
+  if (!p.available) return "";
+  const devices = p.devices || [];
+  const here = ui.pushHere;
+  let text, button;
+  if (here) {
+    text = "On for this device" + (devices.length > 1 ? " and " + plural(devices.length - 1, "other device") : "") + ". Alerts arrive as phone notifications, even with Tradera closed.";
+    button = '<button class="btn ghost small" data-action="push-test">Send test</button><button class="btn ghost small" data-action="push-off">Turn off here</button>';
+  } else if (isIOS && !isInstalled()) {
+    text = "On iPhone, add Tradera to your Home Screen first: tap Share → Add to Home Screen, open Tradera from the new icon, then come back here.";
+    button = "";
+  } else if (!pushSupported()) {
+    text = "This browser can't receive notifications. Use Chrome, Edge, Firefox or the iPhone home-screen app.";
+    button = "";
+  } else {
+    text = "Get entry alerts, setup results and chart reminders as notifications from Tradera itself. No extra app needed." +
+      (devices.length ? " Already on for " + plural(devices.length, "device") + "." : "");
+    button = '<button class="btn primary small" data-action="push-on">Turn on notifications</button>';
+  }
+  const on = here || devices.length > 0;
+  return '<div class="channel ' + (on ? "on" : "") + '"><div class="channel-top"><strong>Tradera notifications</strong>' +
+    '<span class="state-dot ' + (here ? "on" : "off") + '">' + (here ? "On" : "Off") + "</span></div>" +
+    "<p>" + esc(text) + "</p><div class=\"toolbar\" style=\"margin:0\">" + button + "</div></div>";
 }
 
 function askNotificationPermission() {

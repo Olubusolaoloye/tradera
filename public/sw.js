@@ -10,7 +10,7 @@
    - Everything else (icons, fonts) is served from cache and refreshed behind
      the scenes. */
 
-const VERSION = "3.2.1";
+const VERSION = "3.3.0";
 const CACHE = "tradera-shell-" + VERSION;
 const SHELL = [
   "/",
@@ -98,3 +98,43 @@ self.addEventListener("fetch", function (event) {
   }
   event.respondWith(staticRequest(request));
 });
+
+/* ------------------------------------------------- Tradera notifications
+   Alerts sent by the Tradera server arrive here even when the app is
+   closed, and are shown as normal phone notifications. */
+
+self.addEventListener("push", function (event) {
+  let d = {};
+  try { d = event.data ? event.data.json() : {}; } catch (_) { d = { body: event.data ? event.data.text() : "" }; }
+  const urgent = !!d.urgent;
+  event.waitUntil(self.registration.showNotification(d.title || "Tradera", {
+    body: d.body || "",
+    tag: d.tag || "tradera",
+    renotify: true,
+    requireInteraction: urgent,            // entries stay on screen until tapped
+    icon: "/icons/apple-touch-icon.png",
+    badge: "/icons/apple-touch-icon.png",
+    vibrate: urgent ? [400, 120, 400, 120, 800] : [160],
+    timestamp: d.at || Date.now(),
+    data: { url: d.url || "/" }
+  }));
+});
+
+self.addEventListener("notificationclick", function (event) {
+  event.notification.close();
+  const target = new URL((event.notification.data && event.notification.data.url) || "/", self.location.origin).href;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then(function (list) {
+      for (const client of list) {
+        if (client.url.indexOf(self.location.origin) === 0 && "focus" in client) {
+          return client.focus().then(function (c) { return c && "navigate" in c ? c.navigate(target) : c; });
+        }
+      }
+      return self.clients.openWindow(target);
+    })
+  );
+});
+
+/* A browser can rotate the notification address; keep the server in step.
+   The new address is sent next time the app opens (it needs the login). */
+self.addEventListener("pushsubscriptionchange", function () { /* handled by the app on next open */ });

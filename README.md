@@ -233,6 +233,22 @@ dashboard ask **Did you take it?** **Yes, log it** opens the trade form already 
 before the entry ever filled is marked **missed**. Setups you invalidate yourself ask too.
 Prices are checked every 2 minutes online, so a quick wick between checks can be missed.
 
+## Tradera notifications (no extra app)
+
+Tradera sends its own phone and browser notifications with the Web Push standard: entry
+alerts, "getting close", finished setups and chart-check reminders, even when the app is
+closed. Open **Alerts → Tradera notifications → Turn on notifications** on each device.
+
+- **iPhone / iPad (iOS 16.4+):** add Tradera to the Home Screen first (Safari → Share → Add to
+  Home Screen), open it from that icon, then turn notifications on. Apple only allows web
+  notifications for home-screen apps.
+- **Android, Windows, Mac:** works in Chrome, Edge and Firefox.
+
+Entry alerts stay on screen until tapped and vibrate harder. They follow the phone's silent and
+Focus settings; for an alarm that rings through those, add Pushover too. The site's
+notification keys are created automatically (stored in Netlify Blobs, or `data/push-keys.json`
+locally). The admin can switch the feature off under Features.
+
 ## Pushover alarm (recommended for entries)
 
 Pushover rings entry alerts as an alarm that sounds through silent mode and Do Not Disturb

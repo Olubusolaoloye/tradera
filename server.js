@@ -15,6 +15,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { exec } = require("node:child_process");
 const { createDesk, normalizeDB } = require("./lib/desk-core");
+const push = require("./lib/webpush");
 
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -23,6 +24,23 @@ const PUBLIC_DIR = path.join(ROOT, "public");
 const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(ROOT, "data");
 const DB_FILE = path.join(DATA_DIR, "db.json");
 const IMAGE_DIR = path.join(DATA_DIR, "images");
+const PUSH_FILE = path.join(DATA_DIR, "push-keys.json");
+
+/** Notification keys for this copy of Tradera, made on first run. */
+function loadPushKeys() {
+  try {
+    push.setPushKeys(JSON.parse(fs.readFileSync(PUSH_FILE, "utf8")));
+  } catch (_) {
+    const keys = push.newPushKeys();
+    if (!keys) return;
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(PUSH_FILE, JSON.stringify(keys, null, 2));
+    } catch (_) { /* keep them in memory only */ }
+    push.setPushKeys(keys);
+  }
+}
+loadPushKeys();
 const OPEN_BROWSER = process.env.NO_OPEN !== "1";
 
 // ------------------------------------------------------------------- storage
