@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.tradera.app",
+      "sha256_cert_fingerprints": [
+        "84:09:E0:B4:EF:81:0B:C3:8E:2C:9A:71:37:9A:95:6F:9B:AA:6E:19:9C:E8:A2:08:FE:22:EC:45:7F:1C:D7:ED"
+      ]
+    }
+  }
+]

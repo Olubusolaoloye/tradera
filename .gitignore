@@ -3,3 +3,14 @@ data/
 .netlify/
 *.log
 .claude/
+
+# Android app: build output and signing keys never go in git
+android/app/build/
+android/build/
+android/.gradle/
+android/*.keystore
+android/*.jks
+android/*.apk
+android/*.aab
+android/*.idsig
+android/local.properties

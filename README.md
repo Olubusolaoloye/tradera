@@ -340,6 +340,39 @@ The layout is tuned for phones:
 - 16px inputs so iOS does not zoom on focus
 - all primary touch targets at least 40px
 
+## Android app (APK)
+
+`android/` is a Trusted Web Activity made with Google's Bubblewrap: a real Android app
+(package `com.tradera.app`, Android 7.0+) that opens Tradera full screen with its own icon,
+splash screen and notifications. It loads the live site, so app updates ship with every deploy.
+`public/.well-known/assetlinks.json` proves the site and app belong together; without a matching
+fingerprint Android shows a small address bar at the top.
+
+**Build a test APK** (Java 17 and the Android SDK; this repo was built with Bubblewrap's JDK at
+`~/.bubblewrap/jdk17`):
+
+```bash
+cd android
+JAVA_HOME=~/.bubblewrap/jdk17 ./gradlew assembleDebug
+```
+
+The APK is `android/app/build/outputs/apk/debug/app-debug.apk`. It is signed with this
+computer's debug key, which is fine for installing on your own phones (allow "install unknown
+apps" for your file manager).
+
+**Release / Google Play:** create your own signing key once and keep it safe forever (losing it
+means you can't update the app):
+
+```bash
+cd android
+~/.bubblewrap/jdk17/bin/keytool -genkeypair -v -keystore tradera-release.keystore -alias tradera -keyalg RSA -keysize 2048 -validity 10000
+```
+
+then build a signed bundle with `npx @bubblewrap/cli build` (it asks for the key passwords) and
+add the release key's SHA-256 fingerprint (`keytool -list -v -keystore tradera-release.keystore`)
+to `public/.well-known/assetlinks.json` next to the test one. Keys, APKs and build output are
+git-ignored.
+
 ## Test
 
 ```powershell
