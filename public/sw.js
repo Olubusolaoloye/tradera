@@ -10,7 +10,7 @@
    - Everything else (icons, fonts) is served from cache and refreshed behind
      the scenes. */
 
-const VERSION = "3.4.0";
+const VERSION = "3.4.1";
 const CACHE = "tradera-shell-" + VERSION;
 const SHELL = [
   "/",
@@ -113,7 +113,7 @@ self.addEventListener("push", function (event) {
     renotify: true,                        // every repeat sounds and vibrates again
     requireInteraction: urgent,            // urgent alerts stay on screen until handled
     silent: false,
-    icon: "/icons/apple-touch-icon.png",
+    icon: "/icons/icon-192.png",
     badge: "/icons/apple-touch-icon.png",
     vibrate: urgent ? [600, 200, 600, 200, 600, 200, 1200, 300, 600, 200, 600] : [160],
     timestamp: d.at || Date.now(),
