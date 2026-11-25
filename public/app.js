@@ -380,10 +380,197 @@ function showMaintenance(message) {
   box.querySelector("button").addEventListener("click", function () { location.reload(); });
 }
 
+/* ------------------------------------------------------- offline outbox
+   Journal changes made without internet (or when the connection drops while
+   saving) are kept on this device, shown straight away, and sent to the
+   account in order when the connection is back. */
+
+const OUTBOX_KEY = "tradera:outbox";
+const OFFLINE_WRITES = [
+  /^POST \/api\/trades$/, /^POST \/api\/trades\/[^/]+\/close$/, /^DELETE \/api\/trades\/[^/]+$/,
+  /^POST \/api\/setups$/, /^POST \/api\/setups\/batch$/, /^POST \/api\/setups\/[^/]+\/(status|skip-log)$/,
+  /^DELETE \/api\/setups\/[^/]+$/
+];
+let outboxFlushing = false;
+
+function outbox() {
+  try { return JSON.parse(localStorage.getItem(OUTBOX_KEY) || "[]"); } catch (_) { return []; }
+}
+function saveOutbox(list) {
+  try { localStorage.setItem(OUTBOX_KEY, JSON.stringify(list)); } catch (_) { /* storage full */ }
+}
+function queueable(method, path) {
+  const key = method + " " + path.split("?")[0];
+  return OFFLINE_WRITES.some(re => re.test(key));
+}
+function newId() {
+  return crypto.randomUUID ? crypto.randomUUID() : "id-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+}
+const numOrNull = v => (v === "" || v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Number(v));
+
+/** Apply one saved change to a state object (also used on top of fresh server data). */
+function applyLocalChange(st, item) {
+  const { method, path, body } = item;
+  const parts = path.split("/");
+  const b = body || {};
+  st.trades = st.trades || [];
+  st.setups = st.setups || [];
+  st.priority = st.priority || [];
+  const setupShape = function (x, old) {
+    const o = Object.assign({}, old || {}, x);
+    ["entry", "stop", "target", "thresholdPips"].forEach(k => { if (k in x) o[k] = numOrNull(x[k]); });
+    o.status = o.status || "watching";
+    o.priority = o.priority || "medium";
+    o.direction = o.direction === "short" ? "short" : "long";
+    if (o.threshold === undefined) o.threshold = o.thresholdPips || (st.settings && st.settings.defaultThresholdPips) || 15;
+    o.pending = true;
+    return o;
+  };
+  const placeSetup = function (o) {
+    const i = st.setups.findIndex(x => x.id === o.id);
+    if (i >= 0) st.setups[i] = o; else st.setups.unshift(o);
+    st.priority = st.priority.filter(x => x.id !== o.id);
+    if (o.status === "watching") st.priority.unshift(o);
+  };
+  if (method === "POST" && path === "/api/trades") {
+    const i = st.trades.findIndex(t => t.id === b.id);
+    const t = Object.assign({}, i >= 0 ? st.trades[i] : {}, b);
+    ["entry", "stop", "target", "exit", "size", "riskAmount", "pnl", "fees"].forEach(k => { if (k in b) t[k] = numOrNull(b[k]); });
+    t.direction = t.direction === "short" ? "short" : "long";
+    t.status = t.status === "closed" ? "closed" : "open";
+    t.openedAt = t.openedAt ? new Date(t.openedAt).toISOString() : new Date().toISOString();
+    if (t.status === "closed") t.closedAt = t.closedAt ? new Date(t.closedAt).toISOString() : new Date().toISOString();
+    t.pending = true;
+    if (i >= 0) st.trades[i] = t; else st.trades.unshift(t);
+  } else if (method === "POST" && /\/close$/.test(path)) {
+    const t = st.trades.find(x => x.id === decodeURIComponent(parts[3]));
+    if (t) {
+      Object.assign(t, b, { status: "closed", closedAt: b.closedAt || new Date().toISOString(), pending: true });
+      ["exit", "pnl", "fees"].forEach(k => { if (k in b) t[k] = numOrNull(b[k]); });
+    }
+  } else if (method === "DELETE" && parts[2] === "trades") {
+    const id = decodeURIComponent(parts[3]);
+    st.trades = st.trades.filter(t => t.id !== id);
+  } else if (method === "POST" && path === "/api/setups") {
+    const old = st.setups.find(x => x.id === b.id);
+    placeSetup(setupShape(b, old));
+  } else if (method === "POST" && path === "/api/setups/batch") {
+    (b.setups || []).forEach(x => placeSetup(setupShape(Object.assign({}, x, { status: "watching" }))));
+  } else if (method === "POST" && /\/status$/.test(path)) {
+    const o = st.setups.find(x => x.id === decodeURIComponent(parts[3]));
+    if (o) placeSetup(Object.assign({}, o, { status: b.status || o.status, pending: true }));
+  } else if (method === "POST" && /\/skip-log$/.test(path)) {
+    const o = st.setups.find(x => x.id === decodeURIComponent(parts[3]));
+    if (o) placeSetup(Object.assign({}, o, { logPrompt: false, notTaken: true, pending: true }));
+  } else if (method === "DELETE" && parts[2] === "setups") {
+    const id = decodeURIComponent(parts[3]);
+    st.setups = st.setups.filter(x => x.id !== id);
+    st.priority = st.priority.filter(x => x.id !== id);
+  }
+  return st;
+}
+
+/** Server data plus anything still waiting to be sent. */
+function withPending(st) {
+  const list = outbox();
+  if (!list.length || !st || !st.settings) return st;
+  list.forEach(item => applyLocalChange(st, item));
+  st.pendingSync = list.length;
+  return st;
+}
+
+/** Keep a change on this device and show it now. */
+function saveOffline(method, path, body) {
+  const b = body ? JSON.parse(JSON.stringify(body)) : {};
+  // Give new items their id now so the queued change and the screen agree.
+  if ((path === "/api/trades" || path === "/api/setups") && !b.id) b.id = newId();
+  if (path === "/api/setups/batch") (b.setups || []).forEach(x => { if (!x.id) x.id = newId(); });
+  const list = outbox();
+  list.push({ method, path, body: b, at: Date.now() });
+  saveOutbox(list);
+  const copy = JSON.parse(JSON.stringify(state || {}));
+  applyLocalChange(copy, list[list.length - 1]);
+  copy.pendingSync = list.length;
+  state = copy;
+  cacheState(true);
+  setTimeout(flushOutbox, 4000);
+  return copy;
+}
+
+/** Send saved changes, oldest first. Stops at the first network failure. */
+async function flushOutbox() {
+  if (outboxFlushing || !outbox().length || (navigator.onLine === false)) return;
+  outboxFlushing = true;
+  let last = null, sent = 0;
+  const failed = [];
+  try {
+    for (;;) {
+      const list = outbox();
+      if (!list.length) break;
+      const item = list[0];
+      let res;
+      try {
+        res = await fetch(item.path, {
+          method: item.method,
+          headers: { "Content-Type": "application/json", ...authHeaders() },
+          body: item.method === "DELETE" ? undefined : JSON.stringify(item.body || {}),
+          cache: "no-store"
+        });
+      } catch (_) {
+        break; // still offline: try again later
+      }
+      if (res.status === 401) { showGate("account"); break; }
+      if (res.status >= 500 && res.status !== 501) break; // server hiccup: retry later
+      let data = {};
+      try { data = await res.json(); } catch (_) { /* empty */ }
+      saveOutbox(outbox().slice(1));
+      if (res.ok) { sent++; if (data && data.settings) last = data; }
+      else if (res.status !== 404) failed.push(data.error || "Request failed (" + res.status + ")");
+    }
+  } finally {
+    outboxFlushing = false;
+  }
+  if (last) applyState(withPending(last));
+  else if (state) { state.pendingSync = outbox().length; renderView(); }
+  if (sent && !outbox().length) toast("Synced", plural(sent, "offline change") + " saved to your account.");
+  if (failed.length) toast("Some offline changes weren't saved", failed[0], "error", 10000);
+}
+
+window.addEventListener("online", function () { setTimeout(flushOutbox, 800); });
+setInterval(flushOutbox, 30000);
+
 async function api(path, options) {
   const opts = options || {};
+  const method = String(opts.method || "GET").toUpperCase();
+  if (queueable(method, path)) {
+    // Keep order: if older changes are still waiting, this one waits too.
+    if (navigator.onLine === false || outbox().length) {
+      const local = saveOffline(method, path, opts.body ? JSON.parse(opts.body) : {});
+      flushOutbox();
+      return local;
+    }
+    try {
+      return await apiOnline(path, opts);
+    } catch (err) {
+      if (err && err.network) return saveOffline(method, path, opts.body ? JSON.parse(opts.body) : {});
+      throw err;
+    }
+  }
+  const data = await apiOnline(path, opts);
+  return data && data.settings ? withPending(data) : data;
+}
+
+async function apiOnline(path, options) {
+  const opts = options || {};
   const headers = { "Content-Type": "application/json", ...authHeaders(), ...(opts.headers || {}) };
-  const res = await fetch(path, { ...opts, headers, cache: "no-store" });
+  let res;
+  try {
+    res = await fetch(path, { ...opts, headers, cache: "no-store" });
+  } catch (err) {
+    const e = new Error("You're offline. Check your internet connection.");
+    e.network = true;
+    throw e;
+  }
   let data = {};
   try { data = await res.json(); } catch (_) { /* empty */ }
   if (res.status === 401) {
@@ -596,6 +783,15 @@ function renderView() {
   else if (ui.view === "pairs") viewEl.innerHTML = renderPairs();
   else if (ui.view === "alerts") viewEl.innerHTML = renderAlerts();
   else viewEl.innerHTML = renderSettings();
+  if (state.pendingSync) {
+    const sync = document.createElement("div");
+    sync.className = "offline-bar";
+    sync.setAttribute("role", "status");
+    sync.textContent = navigator.onLine === false
+      ? "Offline. " + plural(state.pendingSync, "change") + " saved on this device will sync when you're back online."
+      : plural(state.pendingSync, "change") + " saved on this device " + (state.pendingSync === 1 ? "is" : "are") + " waiting to sync.";
+    viewEl.insertBefore(sync, viewEl.firstChild);
+  }
   if (state.announcement) {
     const bar = document.createElement("div");
     bar.className = "announce";
@@ -1117,6 +1313,7 @@ function renderAlerts() {
   const dot = (on, warn) => '<span class="state-dot ' + (on ? "on" : warn ? "warn" : "off") + '">' + (on ? "On" : warn ? "Blocked" : "Off") + "</span>";
   const card = (name, html) => feat(name) ? html : "";
   return (feat("reminders") ? remindersPanel() : "") + '<div class="channel-grid section-gap">' +
+    (feat("alarm") ? alarmCard() : "") +
     (feat("webpush") ? pushCard() : "") +
     card("pushover", '<div class="channel ' + (pushOn ? "on" : "") + '"><div class="channel-top"><strong>Alarm (Pushover)</strong>' + dot(pushOn) + "</div>" +
       "<p>" + (pushOn ? "Entry alerts sound as an alarm, even on silent, and repeat every 30 seconds until you tap them."
@@ -2822,6 +3019,19 @@ document.addEventListener("click", async function (e) {
     }
     if (action === "enable-alerts") return askNotificationPermission();
     if (action === "push-on") return turnOnPush();
+    if (action === "alarm-pair") return pairAlarm();
+    if (action === "alarm-test") {
+      applyState(await post("/api/alarm/test", {}));
+      toast("Test alarm sent", "Your phone should ring within about 30 seconds. Tap Stop to end it.");
+      return;
+    }
+    if (action === "alarm-unpair") {
+      if (!(await confirmDialog("Turn off the loud alarm on this device?", "It stops ringing for entries. You can pair it again any time.", "Turn off"))) return;
+      applyState(await post("/api/alarm/unpair", { id: id }));
+      if (inAndroidApp()) openAppLink("unpair");
+      toast("Loud alarm off", "That phone won't ring for entries.");
+      return;
+    }
     if (action === "push-off") return turnOffPush();
     if (action === "push-test") {
       applyState(await post("/api/push/test", {}));
@@ -2982,6 +3192,53 @@ async function turnOffPush() {
   toast("Notifications off", "This device won't get Tradera notifications.");
 }
 
+/* ------------------------------------------------ loud phone alarm (Android app) */
+
+const isAndroid = /Android/i.test(navigator.userAgent);
+// The Android app opens Tradera with this referrer; remember it for this device.
+try {
+  if (String(document.referrer).indexOf("android-app://com.tradera.app") === 0) localStorage.setItem("tradera:inApp", "1");
+} catch (_) { /* private mode */ }
+const inAndroidApp = () => { try { return localStorage.getItem("tradera:inApp") === "1"; } catch (_) { return false; } };
+
+function openAppLink(path) {
+  location.href = "intent://" + path + "#Intent;scheme=tradera;package=com.tradera.app;end";
+}
+
+async function pairAlarm() {
+  const r = await post("/api/alarm/pair", { label: deviceLabel() });
+  applyState(r);
+  const q = "h=" + encodeURIComponent(location.origin) + "&d=" + r.pair.d + "&k=" + r.pair.k + (r.pair.u ? "&u=" + r.pair.u : "");
+  toast("Allow what the app asks", "Allow notifications, battery use and full-screen alarms so Tradera can ring like an alarm clock.", "", 9000);
+  openAppLink("pair?" + q);
+}
+
+function alarmCard() {
+  const a = state.alarm || {};
+  if (!a.available || !isAndroid) return "";
+  const devices = a.devices || [];
+  const list = devices.map(d =>
+    '<div class="alarm-device"><span>' + esc(d.label) + '</span><span class="faint">' +
+      (d.lastSeenAt ? "checked in " + timeAgo(new Date(d.lastSeenAt).getTime()) : "paired " + timeAgo(new Date(d.addedAt).getTime())) +
+    '</span><button class="btn ghost small" data-action="alarm-unpair" data-id="' + esc(d.id) + '">Remove</button></div>').join("");
+  let text, buttons;
+  if (!inAndroidApp()) {
+    text = "Install the Tradera Android app, open it, then turn this on there. Your phone will ring like an alarm clock — loud, even on silent — when price reaches an entry.";
+    buttons = "";
+  } else if (devices.length) {
+    text = "This phone rings like an alarm clock for entries: loud on the alarm channel (plays on silent), full screen, until you tap Stop.";
+    buttons = '<button class="btn ghost small" data-action="alarm-test">Ring a test now</button>' +
+      '<button class="btn ghost small" data-action="alarm-pair">Pair again</button>';
+  } else {
+    text = "Make this phone ring like an alarm clock when price reaches an entry: loud on the alarm channel (plays even on silent), full screen over the lock screen, until you tap Stop.";
+    buttons = '<button class="btn primary small" data-action="alarm-pair">Turn on loud alarm</button>';
+  }
+  return '<div class="channel ' + (devices.length ? "on" : "") + '"><div class="channel-top"><strong>Loud alarm (Android app)</strong>' +
+    '<span class="state-dot ' + (devices.length ? "on" : "off") + '">' + (devices.length ? "On" : "Off") + "</span></div>" +
+    "<p>" + esc(text) + "</p>" + (list ? '<div class="alarm-devices">' + list + "</div>" : "") +
+    '<div class="toolbar" style="margin:0">' + buttons + "</div></div>";
+}
+
 function pushCard() {
   const p = state.push || {};
   if (!p.available) return "";
@@ -3137,8 +3394,8 @@ async function boot() {
   } catch (err) {
     if (!document.getElementById("gate").hidden) return;
     if (cached && cached.settings) {
-      startApp(cached);
-      setFeedError("Offline — retrying");
+      startApp(withPending(cached));
+      setFeedError("Offline — your changes are saved on this device");
       return;
     }
     viewEl.innerHTML = '<div class="panel"><div class="panel-body">' +
@@ -3161,6 +3418,7 @@ function startApp(next) {
   renderView();
   if (state.realtime === false) startPolling();
   else connectSSE();
+  setTimeout(flushOutbox, 1500);
 }
 
 const gateForm = document.getElementById("gateForm");

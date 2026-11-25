@@ -244,6 +244,12 @@ const server = http.createServer(async (req, res) => {
 
   // Everything else under /api needs a login once a password is set. The live
   // stream can't send headers (EventSource), so it passes the token as ?key=.
+  if (pathname === "/api/alarm/poll" && req.method === "GET") {
+    const r = desk.alarmPoll(url.searchParams.get("d"), url.searchParams.get("k"));
+    try { await desk.save(); } catch (_) { /* next check-in */ }
+    return sendJSON(res, r.status, r.body);
+  }
+
   if (pathname.startsWith("/api/") && pathname !== "/api/push/ack") {
     const token = req.headers["x-desk-key"] || url.searchParams.get("key") || "";
     if (!desk.authorize(pathname, token)) {

@@ -394,6 +394,41 @@ async function test(name, fn) {
     } finally { pushLib.setPushKeys(null); }
   });
 
+  await test("loud phone alarm: pair, check in with the key, ring, stop", async () => {
+    const d = core.createDesk({ store: createMemoryStore(null), realtime: false, accountId: "11111111-2222-3333-4444-555555555555" });
+    await d.load();
+    let res = await d.handle("POST", "/api/alarm/pair", { label: "Pixel 7" });
+    assert.equal(res.status, 200);
+    const { d: dev, k, u } = res.body.pair;
+    assert.match(dev, /^[0-9a-f]{12}$/);
+    assert.match(k, /^[0-9a-f]{48}$/);
+    assert.equal(u, "11111111-2222-3333-4444-555555555555");
+    assert.ok(!JSON.stringify(res.body.alarm).includes(k), "the key is never listed back");
+    assert.equal(d.alarmPoll(dev, "0".repeat(48)).status, 404, "wrong key");
+    assert.equal(d.alarmPoll("ffffffffffff", k).status, 404, "unknown phone");
+    let poll = d.alarmPoll(dev, k);
+    assert.equal(poll.status, 200);
+    assert.equal(poll.body.ringing.length, 0);
+    // An entry alert rings paired phones even without web notifications.
+    await d.handle("POST", "/api/setups", { symbol: "EURUSD", direction: "long", entry: 1.08, stop: 1.07, target: 1.1, thresholdPips: 5 });
+    d._setQuote("EURUSD", 1.0799);
+    await d._evaluate();
+    poll = d.alarmPoll(dev, k);
+    assert.equal(poll.body.ringing.length, 1);
+    assert.equal(poll.body.every, 10);
+    const r = poll.body.ringing[0];
+    assert.equal(r.title, "ENTRY REACHED EURUSD");
+    assert.equal(r.ack.u, "11111111-2222-3333-4444-555555555555");
+    // Stop from the phone: the alert's own key.
+    assert.equal((await d.handle("POST", "/api/push/ack", r.ack)).body.stopped, 1);
+    assert.equal(d.alarmPoll(dev, k).body.ringing.length, 0);
+    // Test alarm, then removing the phone.
+    await d.handle("POST", "/api/alarm/test", {});
+    assert.equal(d.alarmPoll(dev, k).body.ringing.length, 1);
+    await d.handle("POST", "/api/alarm/unpair", { id: dev });
+    assert.equal(d.alarmPoll(dev, k).status, 404);
+  });
+
   await test("bulk add skips duplicates", async () => {
     const d = core.createDesk({ store: createMemoryStore(null), realtime: false });
     await d.load();

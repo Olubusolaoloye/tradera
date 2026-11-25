@@ -1595,3 +1595,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--brass); box-shad
 .toast.alert::after { background: linear-gradient(90deg, var(--btn-bottom), var(--brass)); }
 .nav button.active::before { background: linear-gradient(180deg, var(--brass-strong), var(--btn-bottom)); }
 .brand-mark { background: linear-gradient(160deg, #142038, #0A101D); box-shadow: inset 0 0 0 1px rgba(150, 190, 255, .16), 0 6px 18px rgba(0, 0, 0, .35); }
+
+/* offline changes waiting to sync */
+.offline-bar { margin: 0 0 16px; padding: 11px 14px; border-radius: 11px; background: var(--near-soft); color: var(--near); font-size: 13.5px; font-weight: 600; }
+
+/* loud alarm: paired phones */
+.alarm-devices { display: grid; gap: 6px; margin: 2px 0 4px; }
+.alarm-device { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.alarm-device span:first-child { font-weight: 600; }
+.alarm-device .btn { margin-left: auto; }

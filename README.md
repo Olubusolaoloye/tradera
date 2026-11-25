@@ -373,6 +373,24 @@ add the release key's SHA-256 fingerprint (`keytool -list -v -keystore tradera-r
 to `public/.well-known/assetlinks.json` next to the test one. Keys, APKs and build output are
 git-ignored.
 
+### Loud alarm (Android app)
+
+In the Android app, **Alerts → Loud alarm → Turn on loud alarm** pairs the phone (allow
+notifications, unrestricted battery and full-screen alarms when asked). A small service
+("Tradera alarm is on") then checks `/api/alarm/poll` every 30 seconds (every 10 while ringing).
+When an entry alert is ringing, the phone plays its alarm sound on the alarm channel (rings in
+silent mode) at full alarm volume, vibrates, and shows a full-screen alarm over the lock screen
+until **Stop**. Stopping on the phone, from a notification, or by opening Tradera anywhere stops
+it everywhere. It restarts after a reboot. The admin can switch it off (Features → Loud phone
+alarm). Each check-in is a function call on Netlify (about 86,000 a month per always-on phone),
+so for many users a push service (Firebase Cloud Messaging) would be the next step.
+
+## Offline journal
+
+Trades and setups can be added, edited, closed and deleted with no internet. Changes are kept
+on the device (an outbox), shown at once with a "waiting to sync" banner, and sent in order when
+the connection is back. Screenshots, AI reading and live prices still need a connection.
+
 ## Test
 
 ```powershell

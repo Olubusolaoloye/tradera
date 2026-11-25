@@ -10,7 +10,7 @@
    - Everything else (icons, fonts) is served from cache and refreshed behind
      the scenes. */
 
-const VERSION = "3.4.1";
+const VERSION = "3.5.0";
 const CACHE = "tradera-shell-" + VERSION;
 const SHELL = [
   "/",
